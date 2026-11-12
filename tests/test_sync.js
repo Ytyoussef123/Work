@@ -79,7 +79,7 @@ async function device(name, seed, email) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitState(p, s, ms = 8000) { const t = Date.now(); while (Date.now() - t < ms) { if (await p.evaluate(() => fbSync.state()) === s) return true; await sleep(100); } throw new Error('state ' + s + ' not reached, got ' + await p.evaluate(() => fbSync.state())); }
-const login = (p, e) => p.evaluate(e => window.__mockLogin(e), e);
+const login = async (p, e) => { await p.waitForFunction(() => typeof window.__mockLogin === 'function'); return p.evaluate(e => window.__mockLogin(e), e); };   // attendre le chargement du (faux) SDK
 const getLS = (p, k) => p.evaluate(k => JSON.parse(localStorage.getItem(k)), k);
 let pass = 0, fail = 0;
 const canon = v => JSON.stringify(v, function (k, x) { if (Array.isArray(x)) return x.every(e => e && e.id) ? [...x].sort((a, b) => String(a.id).localeCompare(String(b.id))) : x; if (x && typeof x === 'object') return Object.keys(x).sort().reduce((o, kk) => (o[kk] = x[kk], o), {}); return x; });

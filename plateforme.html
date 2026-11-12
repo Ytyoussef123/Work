@@ -55,7 +55,7 @@
   })();
 })();
 </script>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><meta name="theme-color" content="#0d0f14">
 <title>Plateforme — Achats · Engineering · Project Master</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=Barlow+Semi+Condensed:wght@500;600&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -11145,6 +11145,307 @@ document.addEventListener('DOMContentLoaded', start);
 
 // Pour les tests et le dépannage (console)
 window.fbSync = { state: () => state, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS };
+})();
+</script>
+<!-- ═══ VUE TÉLÉPHONE (V3) ═══ -->
+<script>
+/* ═════════════════════════════════════════════════════════════════════════
+   VUE TÉLÉPHONE — barre d'onglets en bas, barre de titre + pages en « puces »,
+   listes en cartes, fenêtres qui montent du bas, rien qui dépasse de l'écran.
+   Couche greffée : tout le CSS est limité aux écrans ≤ 768 px ; sur ordinateur
+   rien ne change. Le code des apps n'est pas modifié (enveloppes + observateurs).
+   ═════════════════════════════════════════════════════════════════════════ */
+(function () {
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const MQ = window.matchMedia('(max-width: 768px)');
+const SAFE_T = 'env(safe-area-inset-top,0px)', SAFE_B = 'env(safe-area-inset-bottom,0px)';
+const BLUR = '-webkit-backdrop-filter:saturate(1.6) blur(16px);backdrop-filter:saturate(1.6) blur(16px)';
+
+// ─── STYLES (injectés tout de suite, avant le premier affichage) ──────────
+const css = document.createElement('style');
+css.id = 'm-style';
+css.textContent = `
+:root{--m-tab:58px;--m-hd:54px}
+#m-tabbar,#m-sync,.m-subnav{display:none}
+@media (max-width:768px){
+  html{touch-action:manipulation}
+  body{-webkit-tap-highlight-color:transparent;overscroll-behavior-y:none}
+  /* La barre des applications du haut est remplacée par la barre d'onglets du bas */
+  .app-rail{display:none!important}
+  .main,#main-home{margin-top:0!important;padding-bottom:calc(var(--m-tab) + ${SAFE_B} + 12px)}
+
+  /* Barre de titre */
+  .topbar{position:sticky;top:0;z-index:110;height:auto;min-height:calc(var(--m-hd) + ${SAFE_T});padding:${SAFE_T} 54px 0 54px;gap:10px;background:color-mix(in srgb,var(--surface) 86%,transparent);${BLUR}}
+  .topbar-title{flex:1 1 auto;min-width:0;font-size:17px}
+  .topbar-title > span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #main-achats .topbar-r,#engCrumb{display:none}
+  #main-projects .topbar-r{flex:0 1 46%}
+  .hp-top{position:sticky;top:0;z-index:110;height:auto;min-height:calc(var(--m-hd) + ${SAFE_T});padding:${SAFE_T} 54px 0 12px;gap:8px;background:color-mix(in srgb,var(--surface) 86%,transparent);${BLUR}}
+  .hp-top .xa-user,.hp-kbd,.hp-searchbtn > span:not(:first-child){display:none}
+  .hp-searchbtn{flex:0 0 40px;width:40px;height:40px;padding:0;justify-content:center;margin-left:auto}
+  .hp-bell{flex:0 0 40px;width:40px;height:40px}
+  #hp-tabs button{padding:6px 10px;font-size:12.5px}
+
+  /* Bouton du tiroir (☰) et bouton de synchronisation (☁) */
+  #mobileMenuBtn{top:calc(${SAFE_T} + 7px);left:7px;width:40px;height:40px;background:transparent;color:var(--text);box-shadow:none;border-radius:12px;font-size:20px;z-index:115}
+  #mobileMenuBtn:active{background:var(--surface3)}
+  body[data-app="home"] #mobileMenuBtn{display:none}
+  #m-sync{display:flex;position:fixed;top:calc(${SAFE_T} + 8px);right:8px;width:38px;height:38px;z-index:115;align-items:center;justify-content:center;border-radius:12px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;padding:0}
+  .sidebar{top:0!important;padding-top:${SAFE_T};padding-bottom:calc(${SAFE_B} + 8px);overflow-y:auto;border-radius:0 18px 18px 0}
+
+  /* Pages de l'app : puces qui défilent sous le titre */
+  .m-subnav{display:flex;gap:8px;overflow-x:auto;padding:8px 12px;position:sticky;top:calc(var(--m-hd) + ${SAFE_T});z-index:109;background:color-mix(in srgb,var(--bg) 88%,transparent);${BLUR};border-bottom:1px solid var(--border);scrollbar-width:none}
+  .m-subnav::-webkit-scrollbar{display:none}
+  .m-chip{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:999px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);font:600 13px 'DM Sans',sans-serif;white-space:nowrap;cursor:pointer}
+  .m-chip.on{background:var(--accent);border-color:var(--accent);color:#04120e}
+  .m-cbd{min-width:17px;height:17px;border-radius:9px;background:var(--danger);color:#fff;font:700 10px 'DM Mono',monospace;display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
+
+  /* Barre d'onglets */
+  #m-tabbar{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:130;height:calc(var(--m-tab) + ${SAFE_B});padding-bottom:${SAFE_B};background:color-mix(in srgb,var(--surface) 88%,transparent);${BLUR};border-top:1px solid var(--border)}
+  .m-tab{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:none;border:0;color:var(--muted);font:600 10.5px 'DM Sans',sans-serif;cursor:pointer;padding:0}
+  .m-tab svg{transition:transform .15s}
+  .m-tab.on{color:var(--accent)}
+  .m-tab.on svg{transform:translateY(-1px)}
+  .m-bd{position:absolute;top:5px;left:calc(50% + 7px);min-width:17px;height:17px;border-radius:9px;background:var(--danger);color:#fff;font:700 10px 'DM Mono',monospace;display:none;align-items:center;justify-content:center;padding:0 4px;box-shadow:0 0 0 2px var(--surface)}
+  .m-bd.on{display:flex}
+
+  /* Messages : au-dessus de la barre d'onglets */
+  .toast{left:12px;right:12px;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px);justify-content:center}
+  #fb-banner{top:auto!important;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px)!important}
+  #fb-pop{top:calc(${SAFE_T} + 52px)!important;left:auto!important;right:8px!important}
+
+  /* Fenêtres : feuilles qui montent du bas */
+  .overlay{align-items:flex-end!important}
+  .overlay .modal{width:100%!important;max-width:100%!important;border-radius:20px 20px 0 0;max-height:92vh;padding-bottom:${SAFE_B};transform:translateY(30px)}
+  .overlay.open .modal{transform:none}
+
+  /* Contenu */
+  .content{padding:12px 12px 16px}
+  .fg.s2,.fg.s3{grid-column:1/-1}
+  .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px;margin-bottom:14px}
+  .stat-card{padding:11px 13px;border-radius:12px}
+  .stat-card .sv{font-size:21px;margin:4px 0 2px}
+  .stat-card .ss{font-size:10.5px}
+  body[data-ach="nouveau"] #main-achats .content > .stats-grid{display:none!important}
+  .ph{flex-wrap:wrap;gap:8px;padding:12px 14px}
+  .ph .pt{flex:1 1 auto;min-width:0}
+  .ph > div[style*="display:flex"]{flex-wrap:wrap}
+  #pproj-editor > div:first-child{flex-wrap:wrap}
+  [style*="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"]{grid-template-columns:minmax(0,1fr)!important}
+  .search-bar .search-wrap{flex:1 1 100%;max-width:none}
+  .search-bar select{flex:1 1 calc(50% - 5px);width:auto!important}
+  /* Tableaux sans zone de défilement : défilement (détail budget) ou largeur libre (volumes) */
+  #budgetDetail{overflow-x:auto}
+  #pm-volumes table{min-width:0}
+  /* Grilles écrites en dur dans les pages */
+  [style*="grid-template-columns:repeat(4,1fr)"]{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  #immoSection > div[style*="grid-template-columns:130px"],#immoRows > div{grid-template-columns:88px minmax(0,1fr) 84px 32px!important}
+  [id^="pm-bom-"] > div{flex-wrap:wrap}
+  [id^="pm-bom-"] > div > div[style*="grid-template-columns"]{order:9;flex:1 1 100%!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  [id^="pm-docs-"] > div{grid-template-columns:repeat(2,minmax(0,1fr))!important;padding-bottom:10px;border-bottom:1px solid var(--border)}
+  .bc-nums[style*="repeat(5,1fr)"]{grid-template-columns:repeat(3,minmax(0,1fr))!important;row-gap:10px}
+  [data-supnew]{white-space:normal;text-align:left}
+
+  /* Nouvel achat : les boutons restent en bas de l'écran */
+  body[data-app="achats"][data-ach="nouveau"] #page-nouveau .btn-actions{position:fixed;left:0;right:0;bottom:calc(var(--m-tab) + ${SAFE_B});z-index:120;flex-wrap:nowrap;overflow-x:auto;padding:10px 12px;background:color-mix(in srgb,var(--surface) 92%,transparent);${BLUR};border-top:1px solid var(--border)}
+  #page-nouveau .btn-actions > span,#page-nouveau .btn-actions .bb{display:none}
+  #page-nouveau .btn-actions .btn{flex:1 1 auto;justify-content:center}
+  body[data-app="achats"][data-ach="nouveau"] #main-achats{padding-bottom:calc(var(--m-tab) + ${SAFE_B} + 76px)}
+
+  /* Listes principales : une carte par ligne */
+  .table-panel.m-cards{background:transparent;border:0;overflow:visible}
+  .m-cards .tw{overflow:visible}
+  .m-cards table{display:block;min-width:0!important}
+  .m-cards thead{display:none}
+  .m-cards tbody{display:flex;flex-direction:column;gap:10px}
+  .m-cards tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px 14px}
+  .m-cards tbody tr:hover,.m-cards tbody tr.sel{background:var(--surface)}
+  .m-cards tbody tr.sel{border-color:var(--accent)}
+  .m-cards tbody td{display:block;padding:0;border:0;white-space:normal;min-width:0;max-width:none!important;overflow:hidden;text-overflow:ellipsis;font-size:13px;color:var(--text)}
+  .m-cards tbody td::before{content:attr(data-label);display:block;font:700 9.5px 'DM Sans',sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+  .m-cards tbody td:first-child{grid-column:1/-1;font-size:15px;font-weight:700}
+  .m-cards tbody td:first-child::before,.m-cards tbody td.m-act::before,.m-cards tbody td.m-empty::before{display:none}
+  .m-cards tbody td.m-full{grid-column:1/-1}
+  .m-cards tbody td.m-hide{display:none}
+  .m-cards tbody td.m-act{grid-column:1/-1;display:flex;justify-content:flex-end;gap:6px;padding-top:9px;border-top:1px solid var(--border)}
+  .m-cards tbody td.m-act > div{display:flex;gap:6px}
+  .m-cards tbody td.m-empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:20px 0}
+  .m-cards tbody tr:has(td.m-empty){background:none;border:0}
+  .m-cards .tf{background:none;border:0;padding:10px 4px}
+}`;
+document.head.appendChild(css);
+
+// ─── ICÔNES (traits, couleur = texte) ──────────────────────────────────────
+const ICON = {
+  home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9v12h4.5v-6h4v6h4.5V9"/>',
+  achats: '<circle cx="9.5" cy="20" r="1.4"/><circle cx="17.5" cy="20" r="1.4"/><path d="M2.5 3.5h2.8l2.4 11.6a1.2 1.2 0 0 0 1.2 1h8.9a1.2 1.2 0 0 0 1.2-.9L21 7.5H6.1"/>',
+  engineering: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.7M12 18.8v2.7M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M2.5 12h2.7M18.8 12h2.7M5.3 18.7l1.9-1.9M16.8 7.2l1.9-1.9"/>',
+  projects: '<path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2h8a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  cloud: '<path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.55A6.2 6.2 0 0 0 5.9 9.2 4.7 4.7 0 0 0 7 18.5z"/>'
+};
+const svg = (p, s) => '<svg viewBox="0 0 24 24" width="' + (s || 22) + '" height="' + (s || 22) + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+const TABS = [['home', 'Accueil'], ['achats', 'Achats'], ['engineering', 'Engineering'], ['projects', 'Projets']];
+
+// Barre d'onglets et bouton ☁ : créés tout de suite (le CSS les masque sur ordinateur)
+const bar = document.createElement('nav');
+bar.id = 'm-tabbar'; bar.setAttribute('aria-label', 'Applications');
+bar.innerHTML = TABS.map(([id, l]) => '<button type="button" class="m-tab" data-app="' + id + '">' + svg(ICON[id]) + '<span>' + l + '</span><span class="m-bd"></span></button>').join('');
+document.body.appendChild(bar);
+const sync = document.createElement('button');
+sync.id = 'm-sync'; sync.type = 'button'; sync.setAttribute('aria-label', 'Synchronisation');
+sync.innerHTML = svg(ICON.cloud, 20);
+document.body.appendChild(sync);
+
+// ─── ÉTAT : app et page affichées ──────────────────────────────────────────
+const last = {};   // dernière page vue dans chaque app (rouverte en revenant sur l'onglet)
+function curApp() {
+  const h = $('main-home');
+  if (h && h.classList.contains('on')) return 'home';
+  for (const a of ['achats', 'engineering', 'projects']) { const m = $('main-' + a); if (m && getComputedStyle(m).display !== 'none') return a; }
+  return 'home';
+}
+function curAchPage() { const p = document.querySelector('#main-achats .page.active'); return p ? p.id.replace('page-', '') : ''; }
+function syncApp() {
+  const a = curApp();
+  document.body.dataset.app = a;
+  document.body.dataset.ach = curAchPage();
+  bar.querySelectorAll('.m-tab').forEach(b => b.classList.toggle('on', b.dataset.app === a));
+}
+const toTop = () => { if (MQ.matches) window.scrollTo(0, 0); };
+
+// ─── PUCES : les pages de chaque app (copie de la navigation de sa barre latérale) ──
+function buildChips(app) {
+  const side = $('sidebar-' + app), main = $('main-' + app);
+  const top = main && main.querySelector('.topbar');
+  if (!side || !top) return;
+  let nav = main.querySelector('.m-subnav');
+  if (!nav) {
+    nav = document.createElement('div'); nav.className = 'm-subnav'; nav.setAttribute('role', 'tablist');
+    top.after(nav);
+    nav.addEventListener('click', e => {
+      const b = e.target.closest('.m-chip'); if (!b || !nav._items) return;
+      const it = nav._items[+b.dataset.i]; if (!it) return;
+      it.click(); toTop();
+    });
+  }
+  const items = [...side.querySelectorAll('nav .nav-item')];
+  nav._items = items;
+  nav.innerHTML = items.map((it, i) => {
+    const label = [...it.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+    const cnt = ((it.querySelector('.xa-navcount') || {}).textContent || '').trim();
+    return '<button type="button" role="tab" class="m-chip' + (it.classList.contains('active') ? ' on' : '') + '" data-i="' + i + '">' + esc(label) + (cnt && cnt !== '0' ? '<span class="m-cbd">' + esc(cnt) + '</span>' : '') + '</button>';
+  }).join('');
+  const on = nav.querySelector('.m-chip.on');
+  if (on) nav.scrollLeft = Math.max(0, on.offsetLeft - (nav.clientWidth - on.offsetWidth) / 2);
+}
+function watchChips(app) {
+  const side = $('sidebar-' + app), navEl = side && side.querySelector('nav');
+  if (!navEl) return;
+  let t = 0;
+  new MutationObserver(() => { cancelAnimationFrame(t); t = requestAnimationFrame(() => buildChips(app)); })
+    .observe(navEl, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+  buildChips(app);
+}
+
+// ─── LISTES EN CARTES : chaque cellule reçoit le titre de sa colonne ─────────
+const CARDS = [
+  ['tbody', { hide: ['N° CAPEX', 'N° Immo', 'Ligne'], full: ['Description'] }],
+  ['engProjBody', {}], ['engSolBody', {}], ['engAccBody', {}],
+  ['pmProjBody', { hide: ['Modifié'], full: ['Avancement'] }]
+];
+function cardify(tb, cfg) {
+  const table = tb.closest('table'); if (!table) return;
+  const heads = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+  [...tb.children].forEach(tr => [...tr.children].forEach((td, i) => {
+    if (td.hasAttribute('colspan')) { td.classList.add('m-empty'); return; }
+    const h = heads[i] || '';
+    td.setAttribute('data-label', h);
+    td.classList.toggle('m-act', /^actions?$/i.test(h));
+    td.classList.toggle('m-hide', (cfg.hide || []).includes(h));
+    td.classList.toggle('m-full', (cfg.full || []).includes(h));
+  }));
+}
+function watchCards() {
+  CARDS.forEach(([id, cfg]) => {
+    const tb = $(id); if (!tb) return;
+    const panel = tb.closest('.table-panel'); if (panel) panel.classList.add('m-cards');
+    new MutationObserver(() => cardify(tb, cfg)).observe(tb, { childList: true });
+    cardify(tb, cfg);
+  });
+}
+
+// ─── PASTILLES des onglets (alertes de l'accueil, livraisons en retard) ─────
+function mirrorBadge(tab, el) {
+  const b = bar.querySelector('[data-app="' + tab + '"] .m-bd');
+  if (!el || !b) return;
+  const upd = () => {
+    const t = (el.textContent || '').trim();
+    const show = !!t && t !== '0' && el.style.display !== 'none';
+    b.textContent = show ? t : ''; b.classList.toggle('on', show);
+  };
+  new MutationObserver(upd).observe(el, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+  upd();
+}
+
+// ─── BOUTON ☁ : même couleur et même panneau que le bouton de la synchro ────
+function mirrorSync() {
+  const fb = $('fb-btn');
+  const copy = () => { sync.style.color = fb ? fb.style.color : ''; sync.title = fb ? fb.title : 'Synchronisation'; };
+  if (fb) new MutationObserver(copy).observe(fb, { attributes: true, attributeFilter: ['style', 'title'] });
+  copy();
+  sync.addEventListener('click', e => { e.stopPropagation(); if (fb) fb.click(); });
+}
+
+// Couleur de la barre du navigateur (Android) = fond de l'app, aussi en mode clair
+function setThemeColor() {
+  const m = document.querySelector('meta[name="theme-color"]');
+  if (m) try { m.setAttribute('content', getComputedStyle(document.body).backgroundColor); } catch (e) {}
+}
+
+// ─── BRANCHEMENT ───────────────────────────────────────────────────────────
+const wrap = (name, mk) => { const o = window[name]; if (typeof o === 'function') window[name] = mk(o); };
+function init() {
+  wrap('switchApp', o => function () { const r = o.apply(this, arguments); syncApp(); return r; });
+  wrap('goTo', o => function () {
+    const before = curAchPage();
+    const r = o.apply(this, arguments);
+    const now = curAchPage();
+    document.body.dataset.ach = now;
+    if (now) last.achats = now;
+    if (now !== before) toTop();
+    return r;
+  });
+  wrap('engGo', o => function (v) { const r = o.apply(this, arguments); last.engineering = v; return r; });
+  wrap('pmGo', o => function (v) { const r = o.apply(this, arguments); last.projects = v; return r; });
+  ['engProjTab', 'engLibTab', 'engAccTab', 'pmProjTab'].forEach(n => wrap(n, o => function () { const r = o.apply(this, arguments); toTop(); return r; }));
+  wrap('pmSetTheme', o => function () { const r = o.apply(this, arguments); setThemeColor(); return r; });
+
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('.m-tab'); if (!b) return;
+    const id = b.dataset.app;
+    if (id === curApp()) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    const v = last[id];
+    window.switchApp(id);
+    try {
+      if (id === 'achats' && v && v !== 'nouveau') window.goTo(v);
+      else if (id === 'engineering' && v && v !== 'projects') window.engGo(v);
+      else if (id === 'projects' && v && v !== 'dashboard') window.pmGo(v);
+    } catch (err) { console.warn('m-tab', err); }
+    window.scrollTo(0, 0);
+  });
+
+  ['achats', 'engineering', 'projects'].forEach(watchChips);
+  watchCards();
+  mirrorBadge('home', $('hp-rail-dot'));
+  mirrorBadge('achats', $('xa-nc-liv'));
+  mirrorSync();
+  setThemeColor();
+  syncApp();
+}
+document.addEventListener('DOMContentLoaded', () => { try { init(); } catch (e) { console.error('Vue téléphone', e); } });
+
 })();
 </script>
 </body>
