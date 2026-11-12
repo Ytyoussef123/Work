@@ -10,4 +10,4 @@ export Word) et **Project Master** (projets, actions, BOM, outils, planning).
 - Données : dans le navigateur (localStorage + IndexedDB), ou dans le fichier `platform_data.zip` lié.
 - Librairies (CDN, chargées à la demande) : JSZip, docx, SheetJS (xlsx), ExcelJS.
 - Historique et décisions : `JOURNAL.md`. Règles de travail pour Claude : `CLAUDE.md`.
-- Publication : pas encore de lien.
+- Publication : pas encore de lien. Prévu (V2) : base partagée Firebase (Firestore + Storage) et Firebase Hosting.

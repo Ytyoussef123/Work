@@ -27,6 +27,9 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V1 : état de départ. Les grosses clés (`eng_db`, `pm_db`, `suivi_autosave`, et toute valeur > 200 000 caractères) passent de localStorage vers IndexedDB `plateforme_store` (l. 5-57), via une surcharge de `Storage.prototype`. L'initialisation des apps (DOMContentLoaded) attend le chargement de ces données. Raison : localStorage (~5 Mo) était saturé par les images.
 - 2026-11-12, V1 : autres clés localStorage : `suivi_settings`, `hp_user`, `hp_suppliers`, `hp_last_backup`, `pm_theme`, `pm-root-path`, `pm_*_template`, `gt_closed`. Pièces jointes dans IndexedDB `hp_files` (l. 9214), dossiers projet dans IndexedDB `pm_fs` (l. 7905).
 - 2026-11-12, V1 : « Fichier plateforme » = un `platform_data.zip` lié par l'API File System Access (l. 8114+, sauvegarde auto des 3 apps). Firefox/Safari n'ont pas cette API : repli par export manuel (l. 8788).
+- 2026-11-12, V2 (en préparation) : passage à Firebase — Firestore pour les données (achats, budgets, projets, Engineering), Firebase Storage pour les images et pièces jointes. Forfait Blaze accepté par l'utilisateur. Raison : mêmes données sur tous les appareils et travail en équipe ; Storage exige Blaze pour un nouveau projet.
+- 2026-11-12, V2 (en préparation) : garder le fonctionnement hors ligne (copie locale Firestore, resynchronisation ensuite). Raison : demandé par l'utilisateur.
+- 2026-11-12, V2 (en préparation) : **ne jamais mettre un gros objet entier dans un document Firestore** : limite 1 Mo par document. Découper par enregistrement (un achat = un document) ; images en Storage. Raison : `eng_db` contient des images et dépasse déjà la limite de localStorage.
 
 ## 2. Achats
 - 2026-11-12, V1 : état de départ. Types CAPEX, OPEX, « Costumer » (orthographe d'origine, à ne pas corriger sans vérifier les données existantes). CAPEX et Costumer exigent un budget et des lignes (immos ou lignes client) (validation l. 2021+). Liste paginée par 15, import/export CSV.
@@ -51,6 +54,7 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 
 ## 9. Accueil et recherche
 - 2026-11-12, V1 : état de départ. Couche plateforme (l. 8341-9098) : accueil, recherche globale, alertes, sauvegarde/restauration ZIP. Enveloppe `switchApp` (l. 9030).
+- 2026-11-12, V2 (en préparation) : accès réservé à l'équipe. Connexion Google obligatoire ; seuls les e-mails présents dans la collection Firestore `membres` (gérée à la main dans la console Firebase) peuvent lire et écrire ; tous les membres voient tout. Raison : sans règle de sécurité, n'importe qui pourrait lire les achats. **Ne jamais écrire les e-mails des membres dans le dépôt.**
 
 ## 10. Mobile et thème
 - 2026-11-12, V1 : état de départ. Thème sombre par défaut, mode clair (`pmSetTheme`, bouton ◐). Menu hamburger et styles ≤ 768 px (l. 307+).
@@ -59,7 +63,11 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V1 : mise en place du journal, du README, de `CLAUDE.md` et de `versions/`. Raison : pouvoir reprendre le projet d'une session à l'autre sans redécouvrir ni défaire les décisions.
 - 2026-11-12, V1 : aucun test automatique pour l'instant. V1 = fichier fourni par l'utilisateur, copié tel quel ; il n'a pas encore été lu en entier par Claude (seulement sa structure). **Avant de publier une V2**, lire tout le fichier publié.
 - Modules greffés : plusieurs blocs « s'ajoutent sans modifier » l'existant en enveloppant des fonctions globales (`goTo`, `switchApp`…). Avant de renommer une fonction globale, chercher ses enveloppes.
+- 2026-11-12, V2 (en préparation) : la connexion Firebase ne marche pas depuis un fichier ouvert en local (adresse file://) : l'app doit être servie en https. Proposé : Firebase Hosting (gratuit, domaine autorisé automatiquement). Raison : contrainte de Firebase Authentication.
 
 ## 12. À faire
 - Question : quels tests faire à chaque version (navigateur, téléphone, données d'exemple) ?
-- Question : où publier l'application (lien de publication) ?
+- Question : où publier l'application (lien de publication) ? → proposé : Firebase Hosting (en attente de confirmation).
+- En cours (utilisateur) : créer le projet Firebase, Firestore, Authentication Google, Storage, app Web ; envoyer le bloc `firebaseConfig` (non secret). Ne jamais envoyer de clé de compte de service.
+- Question : confirmer la lecture de la réponse « Oui » = équipe où chacun voit tout.
+- Question : liste des membres — l'utilisateur les ajoute lui-même dans la collection `membres` de la console.
