@@ -10501,5 +10501,627 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 })();
 </script>
+<!-- ═══ SYNCHRONISATION FIREBASE (V2) ═══ -->
+<script>
+/* ═════════════════════════════════════════════════════════════════════════
+   SYNCHRONISATION FIREBASE — connexion Google · base partagée Firestore ·
+   images et pièces jointes dans Storage.
+   Couche greffée : les apps continuent d'écrire dans localStorage (copie locale,
+   utilisable hors ligne). Cette couche découpe chaque base en enregistrements
+   (un achat = un document Firestore, un projet = un document…) et les synchronise.
+   ═════════════════════════════════════════════════════════════════════════ */
+(function () {
+
+const FB_CONFIG = {
+  apiKey: 'AIzaSyDh7UxWOW0pqbfnOL3T78LHjCL0QPZ_Iuk',
+  authDomain: 'work-75094.firebaseapp.com',
+  projectId: 'work-75094',
+  storageBucket: 'work-75094.firebasestorage.app',
+  messagingSenderId: '960808610888',
+  appId: '1:960808610888:web:a3cef56f14a75c43dc3c7d'
+};
+const FB_VER = '12.19.0';
+const CHUNK = 900000;            // un document Firestore fait 1 Mo max : on découpe au-delà
+const DEBOUNCE = 1200;
+
+// Clés synchronisées et façon de les découper en documents
+const KEYS = {
+  suivi_autosave:        { kind: 'array' },                                   // achats
+  suivi_settings:        { kind: 'object', split: ['budgets'] },             // listes + budgets
+  eng_db:                { kind: 'object', split: ['companies', 'types', 'solutions', 'projects', 'acceptances', 'operations'] },
+  pm_db:                 { kind: 'object', split: ['projects', 'customers', 'lines', 'actions'] },
+  hp_suppliers:          { kind: 'map' },                                     // fiches fournisseurs (clé = nom)
+  pm_folder_template_v4: { kind: 'whole' },
+  pm_prod_template:      { kind: 'whole' },
+  pm_equip_template:     { kind: 'whole' }
+};
+// Non synchronisées (propres au poste) : hp_user, pm_theme, pm-root-path, gt_closed, hp_last_backup, idb_keys.
+
+// ─── PETITS OUTILS ─────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const escH = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+function h53(str) {   // empreinte rapide (64 bits) d'une chaîne
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+}
+const enc = s => encodeURIComponent(String(s)).replace(/\./g, '%2E');
+const dec = s => decodeURIComponent(s);
+const rnd = () => Math.random().toString(36).slice(2, 10);
+const jget = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
+const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn('fb', k, e); } };
+
+// État local de la synchro (propre au poste)
+let base  = jget('fb_base', {});    // clé → { idDoc: empreinte } = dernier état commun avec le serveur
+let parts = jget('fb_parts', {});   // clé → { idDoc: nb de morceaux } (documents découpés)
+let up    = jget('fb_up', {});      // images ('i:'+empreinte) et pièces jointes ('f:'+id) déjà envoyées
+const dirty = new Set(jget('fb_dirty', []));
+const saveBase  = () => { jset('fb_base', base); jset('fb_parts', parts); };
+const saveDirty = () => jset('fb_dirty', [...dirty]);
+const saveUp    = () => jset('fb_up', up);
+
+// ─── IMAGES : data:image… ⇄ « fbimg:<empreinte> » (fichier dans Storage) ───
+const RX_DATA = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+\/=]+/g;
+const RX_URL  = /https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/[^\/"'\s]+\/o\/app%2Fimg%2F([0-9a-f]{16})\?[^"'\s<>\\)]*/g;
+const RX_TOK  = /fbimg:([0-9a-f]{16})/g;
+function extract(j, found) {
+  return j.replace(RX_URL, (m, hh) => 'fbimg:' + hh)
+          .replace(RX_DATA, m => { const hh = h53(m); if (found) found[hh] = m; return 'fbimg:' + hh; });
+}
+
+// Petite base IndexedDB : cache des images (empreinte → data URL)
+let _cdb;
+function cdb() {
+  if (!_cdb) _cdb = new Promise(res => {
+    try { const r = indexedDB.open('fb_sync', 1); r.onupgradeneeded = () => r.result.createObjectStore('img'); r.onsuccess = () => res(r.result); r.onerror = () => res(null); } catch (e) { res(null); }
+  });
+  return _cdb;
+}
+const idbDo = (dbp, store, mode, fn) => dbp.then(d => new Promise(res => {
+  if (!d) return res(undefined);
+  try { const t = d.transaction(store, mode); const q = fn(t.objectStore(store)); t.oncomplete = () => res(q && q.result); t.onerror = t.onabort = () => res(undefined); } catch (e) { res(undefined); }
+}));
+const cacheGet = hh => idbDo(cdb(), 'img', 'readonly', s => s.get(hh));
+const cachePut = (hh, v) => idbDo(cdb(), 'img', 'readwrite', s => s.put(v, hh));
+// Pièces jointes Achats+ (même base que la couche Achats+ : hp_files / files)
+let _hdb;
+function hdb() {
+  if (!_hdb) _hdb = new Promise(res => {
+    try { const r = indexedDB.open('hp_files', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => res(r.result); r.onerror = () => res(null); } catch (e) { res(null); }
+  });
+  return _hdb;
+}
+const fileGet = id => idbDo(hdb(), 'files', 'readonly', s => s.get(id));
+const filePut = (id, v) => idbDo(hdb(), 'files', 'readwrite', s => s.put(v, id));
+const blobToData = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); });
+
+// ─── DÉCOUPAGE D'UNE BASE EN DOCUMENTS ET RECONSTRUCTION ───────────────────
+function parseLocal(k) { try { const v = localStorage.getItem(k); return v == null ? null : JSON.parse(v); } catch (e) { return null; } }
+// → { idDoc: { j: JSON (images remplacées par des jetons), o: ordre, h: empreinte } }
+function split(k, val, found) {
+  const c = KEYS[k], out = {};
+  const put = (id, obj, o) => { const j = extract(JSON.stringify(obj === undefined ? null : obj), found); out[id] = { j, o, h: h53(j) }; };
+  if (val == null) return out;
+  const items = (prefix, arr) => arr.forEach((it, i) => put(prefix + enc(it && it.id != null && it.id !== '' ? it.id : '#' + i), it, i));
+  if (c.kind === 'array') { if (Array.isArray(val)) items('r:', val); }
+  else if (c.kind === 'object') {
+    const main = {};
+    Object.keys(val).forEach(f => { if (!(c.split.includes(f) && Array.isArray(val[f]))) main[f] = val[f]; });
+    put('_main', main, 0);
+    c.split.forEach(f => { if (Array.isArray(val[f])) items(f + ':', val[f]); });
+  }
+  else if (c.kind === 'map') { if (val && typeof val === 'object') Object.keys(val).forEach((name, i) => put('k:' + enc(name), val[name], i)); }
+  else put('_main', val, 0);
+  return out;
+}
+// Ordre : on garde la place locale des enregistrements existants ; les nouveaux suivent l'ordre du serveur
+function ordered(recs, prefix, localPos) {
+  return Object.keys(recs).filter(id => id.startsWith(prefix))
+    .map(id => ({ id, r: recs[id], p: localPos[id] != null ? localPos[id] : recs[id].o + 0.5 }))
+    .sort((a, b) => a.p - b.p || a.r.o - b.r.o);
+}
+async function rebuild(k, recs, localVal, found) {
+  const c = KEYS[k], pos = {};
+  const lsplit = split(k, localVal, null); Object.keys(lsplit).forEach(id => pos[id] = lsplit[id].o);
+  const val = async id => JSON.parse(await rehydrate(recs[id].j, found));
+  if (c.kind === 'array') { const a = []; for (const x of ordered(recs, 'r:', pos)) a.push(await val(x.id)); return a; }
+  if (c.kind === 'map') { const m = {}; for (const x of ordered(recs, 'k:', pos)) m[dec(x.id.slice(2))] = await val(x.id); return m; }
+  if (c.kind === 'whole') return recs._main ? val('_main') : localVal;
+  const o = recs._main ? await val('_main') : {};
+  for (const f of c.split) {
+    const xs = ordered(recs, f + ':', pos);
+    if (xs.length || (localVal && Array.isArray(localVal[f])) || f !== 'operations') { o[f] = []; for (const x of xs) o[f].push(await val(x.id)); }
+  }
+  return o;
+}
+// Jetons d'images → data URL (cache local, sinon téléchargement depuis Storage)
+async function rehydrate(j, found) {
+  const hs = [...new Set([...j.matchAll(RX_TOK)].map(m => m[1]))];
+  if (!hs.length) return j;
+  const map = {};
+  for (const hh of hs) {
+    let d = (found && found[hh]) || await cacheGet(hh);
+    if (!d && st) {
+      try {
+        const url = await st.ref('app/img/' + hh).getDownloadURL();
+        try { d = await blobToData(await (await fetch(url)).blob()); cachePut(hh, d); }
+        catch (e) { d = url; }   // CORS du bucket pas encore réglé : on affiche l'image par son lien
+      } catch (e) { /* pas encore envoyée ou hors ligne : on garde le jeton */ }
+    }
+    if (d) map[hh] = d;
+  }
+  return j.replace(RX_TOK, (m, hh) => map[hh] || m);
+}
+// Base qui ne contient que les exemples créés au premier lancement (engInit / pmInit)
+function seedOnly(k, v) {
+  const names = (a, ok) => (a || []).every(x => x && ok.includes(x.name));
+  const none = (...as) => as.every(a => !(a || []).length);
+  if (!v || typeof v !== 'object') return true;
+  if (k === 'eng_db') return none(v.solutions, v.projects, v.acceptances, v.operations) && names(v.companies, ['Akwel Automotive']) && names(v.types, ['Sensor', 'Cylinder', 'Pressure']);
+  if (k === 'pm_db') return none(v.projects, v.actions) && names(v.customers, ['FORD', 'STELLANTIS', 'RENAULT']) && names(v.lines, ['Fuel Lines', 'Brake Lines', 'Cooling Lines', 'EV Cooling']);
+  return false;
+}
+// Union des listes de texte (ex. projets, fournisseurs) lors d'une fusion
+function mergeMain(lj, rj) {
+  try {
+    const l = JSON.parse(lj), r = JSON.parse(rj);
+    const strArr = a => Array.isArray(a) && a.every(x => typeof x === 'string');
+    if (strArr(l) && strArr(r)) return JSON.stringify([...new Set([...r, ...l])]);
+    if (l && r && typeof l === 'object' && typeof r === 'object' && !Array.isArray(r)) {
+      Object.keys(l).forEach(f => { if (strArr(l[f]) && strArr(r[f])) r[f] = [...new Set([...r[f], ...l[f]])]; else if (!(f in r)) r[f] = l[f]; });
+      return JSON.stringify(r);
+    }
+  } catch (e) {}
+  return rj;
+}
+
+// ─── ÉCRITURE LOCALE (sans redéclencher la synchro) + variables des apps ──
+let applying = 0;
+function replaceInPlace(t, s) {
+  Object.keys(t).forEach(k => { if (!(k in s)) delete t[k]; });
+  Object.keys(s).forEach(k => { if (Array.isArray(t[k]) && Array.isArray(s[k])) t[k].splice(0, t[k].length, ...s[k]); else t[k] = s[k]; });
+}
+function setLocal(k, v) {
+  applying++;
+  try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn('fb setLocal', k, e); }
+  finally { applying--; }
+  try {
+    if (k === 'suivi_autosave' && Array.isArray(v)) purchases.splice(0, purchases.length, ...v);
+    else if (k === 'suivi_settings' && v) replaceInPlace(S, v);
+    else if (k === 'eng_db' && v && engInited) replaceInPlace(engDB, v);
+    else if (k === 'pm_db' && v && pmInited) replaceInPlace(pmDB, v);
+  } catch (e) { console.error('fb globals', k, e); }
+}
+
+// ─── ACCROCHE SUR localStorage ─────────────────────────────────────────────
+const P = Storage.prototype, oSet = P.setItem, oRem = P.removeItem;
+const zipKeys = new Set();
+P.setItem = function (k, v) { const r = oSet.apply(this, arguments); if (this === localStorage && KEYS[k] && !applying) onLocalChange(k); return r; };
+P.removeItem = function (k) { const r = oRem.apply(this, arguments); if (this === localStorage && KEYS[k] && !applying) onLocalChange(k); return r; };
+function onLocalChange(k) {
+  if (window.__platformLoading) { zipKeys.add(k); watchZip(); return; }   // chargement d'un ZIP : on demandera
+  dirty.add(k); saveDirty(); schedule();
+}
+
+// ─── FIREBASE ──────────────────────────────────────────────────────────────
+let db = null, st = null, user = null, ready = false, unsubs = [];
+const remote = {}, rawDocs = {};
+let state = 'init', stateMsg = '', lastOk = null;
+const coll = k => db.collection('app').doc(k).collection('r');
+let q = Promise.resolve();
+const run = fn => (q = q.then(fn).catch(e => { console.error('fb', e); setState(navigator.onLine ? 'error' : 'offline', e && e.message); }));
+
+let timer = null;
+function schedule() { clearTimeout(timer); timer = setTimeout(() => run(flush), DEBOUNCE); if (ready) setState('sync'); }
+async function flush() {
+  if (!ready) { if (dirty.size && !['file', 'out', 'denied', 'init'].includes(state)) setState('pending'); return; }
+  for (const k of [...dirty]) await pushKey(k);
+  if (!dirty.size) { lastOk = new Date(); setState(navigator.onLine ? 'ok' : 'offline'); }
+}
+
+async function pushKey(k) {
+  const found = {};
+  const loc = split(k, parseLocal(k), found);
+  const b = base[k] || (base[k] = {}), np = parts[k] || (parts[k] = {});
+  const changed = Object.keys(loc).filter(id => loc[id].h !== b[id]);
+  const removed = Object.keys(b).filter(id => !(id in loc));
+  if (!changed.length && !removed.length) { dirty.delete(k); saveDirty(); return; }
+  // Garde-fou : une seule sauvegarde qui efface beaucoup d'enregistrements de l'équipe
+  const nb = Object.keys(b).length;
+  if (((removed.length >= 10 && removed.length > nb / 2) || (removed.length >= 3 && removed.length === nb)) &&
+      !confirm('Attention : cette modification supprime ' + removed.length + ' enregistrement(s) sur ' + nb + ' (' + k + ') pour TOUTE l\'équipe.\n\nOK : supprimer pour tout le monde.\nAnnuler : reprendre les données de l\'équipe sur ce poste.')) {
+    await resetFromRemote([k]); return;
+  }
+  // 1. Images nouvelles → Storage (avant le document qui les cite)
+  const need = new Set();
+  changed.forEach(id => { for (const m of loc[id].j.matchAll(RX_TOK)) need.add(m[1]); });
+  for (const hh of need) {
+    if (up['i:' + hh]) continue;
+    const d = found[hh] || await cacheGet(hh);
+    if (!d || !d.startsWith('data:')) continue;           // image venue d'un autre poste : déjà sur le serveur
+    await st.ref('app/img/' + hh).putString(d, 'data_url');
+    up['i:' + hh] = 1; saveUp(); cachePut(hh, d);
+  }
+  // 2. Pièces jointes des achats → Storage
+  if (k === 'suivi_autosave') {
+    for (const id of changed) {
+      let rec; try { rec = JSON.parse(loc[id].j); } catch (e) { continue; }
+      for (const a of (rec && rec.attachments) || []) {
+        if (!a || !a.id || up['f:' + a.id]) continue;
+        const f = await fileGet(a.id);
+        if (!f || !f.blob) continue;
+        await st.ref('app/files/' + a.id).put(f.blob, { contentType: f.type || a.type || 'application/octet-stream', customMetadata: { name: String(f.name || a.name || '') } });
+        up['f:' + a.id] = 1; saveUp();
+      }
+    }
+  }
+  // 3. Documents Firestore, par lots
+  const ops = [], by = (user && user.email) || '';
+  const ts = firebase.firestore.FieldValue.serverTimestamp();
+  for (const id of changed) {
+    const j = loc[id].j, n = Math.max(1, Math.ceil(j.length / CHUNK)), v = rnd();
+    ops.push({ id, data: { j: j.slice(0, CHUNK), n, o: loc[id].o, v, t: ts, by } });
+    for (let i = 1; i < n; i++) ops.push({ id: id + '~' + i, data: { j: j.slice(i * CHUNK, (i + 1) * CHUNK), of: id, i, v } });
+    for (let i = n; i < (np[id] || 1); i++) ops.push({ id: id + '~' + i, del: true });
+  }
+  for (const id of removed) { ops.push({ id, del: true }); for (let i = 1; i < (np[id] || 1); i++) ops.push({ id: id + '~' + i, del: true }); }
+  const commits = [];
+  let batch = db.batch(), cnt = 0, size = 0;
+  for (const op of ops) {
+    const ref = coll(k).doc(op.id), sz = op.data ? op.data.j.length : 50;
+    if (cnt && (cnt >= 400 || size + sz > 7000000)) { commits.push(batch.commit()); batch = db.batch(); cnt = 0; size = 0; }
+    if (op.del) batch.delete(ref); else batch.set(ref, op.data);
+    cnt++; size += sz;
+  }
+  if (cnt) commits.push(batch.commit());
+  // Le serveur confirmera plus tard (hors ligne : file d'attente gardée par Firestore). On avance tout de suite.
+  const prev = {};
+  changed.forEach(id => { prev[id] = b[id]; b[id] = loc[id].h; const n = Math.max(1, Math.ceil(loc[id].j.length / CHUNK)); if (n > 1) np[id] = n; else delete np[id]; });
+  removed.forEach(id => { prev[id] = b[id]; delete b[id]; delete np[id]; });
+  saveBase(); dirty.delete(k); saveDirty();
+  Promise.all(commits).catch(e => {
+    console.error('fb commit', k, e);
+    [...changed, ...removed].forEach(id => { if (b[id] === (loc[id] && loc[id].h) || !(id in b)) { if (prev[id] === undefined) delete b[id]; else b[id] = prev[id]; } });
+    saveBase(); dirty.add(k); saveDirty();
+    setState('error', e && e.code === 'permission-denied' ? 'Écriture refusée par le serveur (droits ?)' : (e && e.message));
+  });
+}
+
+// Réception d'un changement fait par un autre poste
+function onSnap(k, snap) {
+  const raw = rawDocs[k] || (rawDocs[k] = {}), rem = remote[k] || (remote[k] = {});
+  const touched = new Set();
+  snap.docChanges().forEach(ch => {
+    const id = ch.doc.id;
+    if (ch.type === 'removed') delete raw[id]; else raw[id] = ch.doc.data();
+    touched.add(id.replace(/~\d+$/, ''));
+  });
+  const ids = [];
+  touched.forEach(id => {
+    const d = raw[id];
+    if (!d) { delete rem[id]; ids.push(id); return; }
+    let j = d.j || '';
+    for (let i = 1; i < (d.n || 1); i++) { const p = raw[id + '~' + i]; if (!p || p.v !== d.v) return; j += p.j; }   // morceaux pas tous arrivés
+    rem[id] = { j, o: d.o || 0, h: h53(j) }; ids.push(id);
+  });
+  if (ids.length) return reconcile(k, ids);
+}
+async function reconcile(k, ids) {
+  const found = {}, lv = parseLocal(k), loc = split(k, lv, found), rem = remote[k] || {};
+  const b = base[k] || (base[k] = {});
+  const recs = Object.assign({}, loc);
+  let applied = false;
+  for (const id of ids) {
+    const r = rem[id], l = loc[id], lh = l ? l.h : undefined;
+    if (lh === b[id]) {                       // pas de modification locale en attente → on prend celle du serveur
+      if (r) { if (r.h !== lh) { recs[id] = r; applied = true; } b[id] = r.h; }
+      else { if (l) { delete recs[id]; applied = true; } delete b[id]; }
+    } else if (r ? r.h === lh : !l) {         // déjà identiques
+      if (r) b[id] = r.h; else delete b[id];
+    } else { dirty.add(k); }                  // modification locale en attente : elle sera envoyée (la plus récente gagne)
+  }
+  saveBase(); saveDirty();
+  if (applied) {
+    setLocal(k, await rebuild(k, recs, lv, found));
+    received.add(k); refreshSoon();
+    if (k === 'suivi_autosave') pullFiles();
+  }
+  if (dirty.has(k)) schedule();
+}
+
+// Pièces jointes reçues d'un autre poste → copie locale (hp_files)
+let pulling = false;
+async function pullFiles() {
+  if (pulling || !st) return; pulling = true;
+  try {
+    for (const p of (parseLocal('suivi_autosave') || [])) for (const a of (p && p.attachments) || []) {
+      if (!a || !a.id) continue;
+      const have = await fileGet(a.id); if (have) continue;
+      try {
+        const url = await st.ref('app/files/' + a.id).getDownloadURL();
+        const blob = await (await fetch(url)).blob();
+        await filePut(a.id, { blob, name: a.name, type: a.type || blob.type }); up['f:' + a.id] = 1;
+      } catch (e) { /* réessayé plus tard */ }
+    }
+    saveUp();
+  } finally { pulling = false; }
+}
+
+// ─── PREMIÈRE SYNCHRO SUR CE POSTE : fusionner ou remplacer ───────────────
+async function firstSync() {
+  const rems = {}, locs = {}, lvals = {}, founds = {};
+  let remoteCount = 0, localOnly = 0, localCount = 0;
+  for (const k of Object.keys(KEYS)) {
+    const qs = await coll(k).get({ source: 'server' });
+    const raw = {}; qs.forEach(d => raw[d.id] = d.data());
+    const rem = {};
+    Object.keys(raw).filter(id => !/~\d+$/.test(id)).forEach(id => {
+      const d = raw[id]; let j = d.j || '';
+      for (let i = 1; i < (d.n || 1); i++) j += (raw[id + '~' + i] || {}).j || '';
+      rem[id] = { j, o: d.o || 0, h: h53(j) };
+    });
+    rems[k] = rem; lvals[k] = parseLocal(k); founds[k] = {}; locs[k] = split(k, lvals[k], founds[k]);
+    remoteCount += Object.keys(rem).length;
+    if (Object.keys(rem).length && seedOnly(k, lvals[k])) { locs[k] = {}; continue; }   // exemples créés au 1er lancement : on prend ceux de l'équipe
+    const lids = Object.keys(locs[k]); localCount += lids.length;
+    localOnly += lids.filter(id => !(id in rem) && id !== '_main').length;
+  }
+  let mode = 'replace';
+  if (!remoteCount) mode = 'push';
+  else if (localOnly) mode = await askMerge(localOnly, remoteCount);
+  for (const k of Object.keys(KEYS)) {
+    const rem = rems[k], loc = locs[k];
+    base[k] = {}; parts[k] = {};
+    if (mode === 'push' || !Object.keys(rem).length) { if (Object.keys(loc).length) dirty.add(k); continue; }
+    Object.keys(rem).forEach(id => base[k][id] = rem[id].h);
+    let recs = rem;
+    if (mode === 'merge') {
+      recs = Object.assign({}, loc, rem);
+      if (loc._main && rem._main) { const j = mergeMain(loc._main.j, rem._main.j); recs._main = { j, o: 0, h: h53(j) }; }
+      dirty.add(k);
+    }
+    setLocal(k, await rebuild(k, recs, lvals[k], founds[k]));
+  }
+  saveBase(); saveDirty();
+  jset('fb_init', FB_CONFIG.projectId);
+  refreshSoon(true);
+}
+function askMerge(nLocal, nRemote) {
+  return new Promise(res => {
+    const ov = document.createElement('div'); ov.className = 'fb-ov';
+    ov.innerHTML = '<div class="fb-dlg"><h3>☁ Première synchronisation sur ce poste</h3>' +
+      '<p>L\'équipe a déjà <b>' + nRemote + '</b> enregistrement(s) en ligne. Ce poste en a <b>' + nLocal + '</b> qui ne sont pas en ligne.</p>' +
+      '<p><b>Fusionner</b> : ajoute les données de ce poste à celles de l\'équipe (en cas de doublon, la version en ligne gagne).<br>' +
+      '<b>Remplacer</b> : ce poste prend uniquement les données de l\'équipe (les données locales non envoyées sont abandonnées).</p>' +
+      '<div class="fb-row"><button class="btn bs btn-sm" data-m="replace">Remplacer par l\'équipe</button><button class="btn bp btn-sm" data-m="merge">Fusionner</button></div></div>';
+    ov.addEventListener('click', e => { const m = e.target.dataset && e.target.dataset.m; if (m) { ov.remove(); res(m); } });
+    document.body.appendChild(ov);
+  });
+}
+
+// ─── CHARGEMENT D'UN FICHIER PLATEFORME (ZIP) PENDANT LA SYNCHRO ─────────
+let zipWatch = null;
+function watchZip() {
+  if (zipWatch) return;
+  zipWatch = setInterval(() => {
+    if (window.__platformLoading) return;
+    clearInterval(zipWatch); zipWatch = null;
+    if (ready) run(askZip);
+  }, 300);
+}
+async function askZip() {
+  const ks = [...zipKeys].filter(k => { const loc = split(k, parseLocal(k), null), b = base[k] || {}; return Object.keys(loc).some(id => loc[id].h !== b[id]) || Object.keys(b).some(id => !(id in loc)); });
+  zipKeys.clear();
+  if (!ks.length) return;
+  const send = confirm('Un fichier plateforme (ZIP) vient de remplacer des données sur ce poste.\n\nOK : envoyer ces données à toute l\'équipe.\nAnnuler : garder les données de l\'équipe (le contenu du ZIP est ignoré).');
+  if (send) { ks.forEach(k => dirty.add(k)); saveDirty(); schedule(); }
+  else await resetFromRemote(ks);
+}
+async function resetFromRemote(ks) {
+  for (const k of ks) {
+    const rem = remote[k] || {};
+    base[k] = {}; Object.keys(rem).forEach(id => base[k][id] = rem[id].h);
+    setLocal(k, await rebuild(k, rem, parseLocal(k)));
+    dirty.delete(k); received.add(k);
+  }
+  saveBase(); saveDirty(); refreshSoon(true);
+}
+
+// ─── CONNEXION ─────────────────────────────────────────────────────────────
+function stopListeners() { unsubs.forEach(u => { try { u(); } catch (e) {} }); unsubs = []; }
+async function onUser(u) {
+  stopListeners(); ready = false; user = u;
+  if (!u) { setState('out'); return; }
+  setState('sync');
+  try {
+    const m = await db.doc('membres/' + u.email).get();
+    if (!m.exists) { setState('denied'); return; }
+  } catch (e) {
+    if (e && e.code === 'permission-denied') { setState('denied'); return; }
+    setState('offline'); return;           // réessayé au retour du réseau
+  }
+  try { if (!localStorage.getItem('hp_user')) localStorage.setItem('hp_user', u.displayName || u.email); } catch (e) {}
+  run(async () => {
+    if (jget('fb_init', null) !== FB_CONFIG.projectId) await firstSync();
+    normalizeIds();
+    Object.keys(KEYS).forEach(k => { rawDocs[k] = {}; remote[k] = {}; unsubs.push(coll(k).onSnapshot(s => run(() => onSnap(k, s)), e => setState('error', e && e.message))); });
+    ready = true;
+    if (zipKeys.size) run(askZip);
+    if (dirty.size) schedule(); else { lastOk = new Date(); setState('ok'); }
+    pullFiles();
+  });
+}
+// Achats sans identifiant (anciennes données) : on leur en donne un, sinon impossible de les synchroniser
+function normalizeIds() {
+  const a = parseLocal('suivi_autosave');
+  if (!Array.isArray(a) || a.every(p => p && p.id)) return;
+  a.forEach((p, i) => { if (p && !p.id) p.id = 'ID' + Date.now() + '_' + i + rnd().slice(0, 3); });
+  setLocal('suivi_autosave', a); dirty.add('suivi_autosave'); saveDirty();
+}
+function signIn() {
+  const pr = new firebase.auth.GoogleAuthProvider();
+  firebase.auth().signInWithPopup(pr).catch(e => {
+    if (e && /popup-blocked|operation-not-supported/.test(e.code || '')) return firebase.auth().signInWithRedirect(pr);
+    if (e && e.code !== 'auth/popup-closed-by-user' && e.code !== 'auth/cancelled-popup-request') setState('error', e.message);
+  });
+}
+function signOut() { stopListeners(); ready = false; firebase.auth().signOut(); }
+
+function loadJs(urls) {
+  return new Promise((res, rej) => {
+    const tryI = i => {
+      if (i >= urls.length) return rej(new Error('Firebase introuvable'));
+      const s = document.createElement('script'); s.src = urls[i];
+      s.onload = res; s.onerror = () => { s.remove(); tryI(i + 1); };
+      document.head.appendChild(s);
+    };
+    tryI(0);
+  });
+}
+async function start() {
+  injectUI();
+  if (location.protocol === 'file:') { setState('file'); return; }
+  setState('init');
+  try {
+    for (const l of ['app', 'auth', 'firestore', 'storage'])
+      await loadJs(['https://www.gstatic.com/firebasejs/' + FB_VER + '/firebase-' + l + '-compat.js',
+                    'https://cdn.jsdelivr.net/npm/firebase@' + FB_VER + '/firebase-' + l + '-compat.js']);
+  } catch (e) { setState('error', 'Impossible de charger Firebase (réseau ?)'); return; }
+  firebase.initializeApp(FB_CONFIG);
+  db = firebase.firestore();
+  try { await db.enablePersistence({ synchronizeTabs: true }); } catch (e) { console.warn('fb persistence', e && e.code); }
+  st = firebase.storage();
+  firebase.auth().getRedirectResult().catch(e => setState('error', e.message));
+  firebase.auth().onAuthStateChanged(u => onUser(u));
+  window.addEventListener('online', () => { if (user && !ready) onUser(user); else if (dirty.size) schedule(); else setState('ok'); });
+  window.addEventListener('offline', () => setState('offline'));
+  setInterval(() => { if (ready && dirty.size) schedule(); }, 30000);
+}
+
+// ─── AFFICHAGE ─────────────────────────────────────────────────────────────
+const received = new Set();
+let refreshT = null;
+function refreshSoon(all) { clearTimeout(refreshT); refreshT = setTimeout(() => refreshUI(all), 150); }
+const pageOn = id => { const p = $(id); return !!(p && p.classList.contains('active')); };
+function refreshUI(all) {
+  const has = k => all || received.has(k);
+  try {
+    if (has('suivi_settings') && typeof populateSelects === 'function') {
+      const fp = $('flt-proj') && $('flt-proj').value, ff = $('flt-fourn') && $('flt-fourn').value;
+      populateSelects();
+      if (fp && $('flt-proj')) $('flt-proj').value = fp;
+      if (ff && $('flt-fourn')) $('flt-fourn').value = ff;
+    }
+    if ((has('suivi_autosave') || has('suivi_settings')) && typeof updateAll === 'function') {
+      updateAll();
+      if (pageOn('page-budget') && typeof renderBudget === 'function') renderBudget();
+      if (pageOn('page-params') && typeof renderParams === 'function') renderParams();
+    }
+  } catch (e) { console.error('fb refresh', e); }
+  const others = ['eng_db', 'pm_db', 'hp_suppliers'].some(has);
+  received.clear();
+  if (others) showBanner();
+}
+let lastEng = 'projects', lastPm = 'dashboard';
+function trackViews() {
+  const oe = window.engGo, op = window.pmGo;
+  if (typeof oe === 'function') window.engGo = function (v) { lastEng = v; return oe.apply(this, arguments); };
+  if (typeof op === 'function') window.pmGo = function (v) { lastPm = v; return op.apply(this, arguments); };
+}
+function showBanner() {
+  let b = $('fb-banner');
+  if (!b) {
+    b = document.createElement('div'); b.id = 'fb-banner';
+    b.innerHTML = '<span>☁ Données mises à jour par l\'équipe</span><button class="btn bp btn-sm" id="fb-banner-go">Actualiser l\'affichage</button><button class="fb-x" id="fb-banner-x" title="Plus tard">✕</button>';
+    document.body.appendChild(b);
+    $('fb-banner-x').onclick = () => b.classList.remove('on');
+    $('fb-banner-go').onclick = () => {
+      b.classList.remove('on');
+      try { if (engInited) engGo(lastEng); } catch (e) {}
+      try { if (pmInited) pmGo(lastPm); } catch (e) {}
+      try { if (typeof updateAll === 'function') updateAll(); } catch (e) {}
+    };
+  }
+  b.classList.add('on');
+}
+
+const LABEL = {
+  init: ['…', 'var(--muted)', 'Connexion à Firebase…'],
+  file: ['☁', 'var(--muted)', 'Mode local : l\'app est ouverte comme fichier. Pour partager les données avec l\'équipe, ouvrez-la depuis son adresse en ligne.'],
+  out: ['☁', 'var(--muted)', 'Non connecté. Les données restent sur ce poste.'],
+  denied: ['☁', 'var(--danger)', 'Ce compte n\'est pas autorisé. Un administrateur doit ajouter votre e-mail dans la collection « membres » de Firestore.'],
+  pending: ['☁', 'var(--warn)', 'Modifications en attente d\'envoi.'],
+  sync: ['☁', 'var(--accent2)', 'Synchronisation…'],
+  ok: ['☁', 'var(--accent)', 'Synchronisé avec l\'équipe.'],
+  offline: ['☁', 'var(--warn)', 'Hors ligne. Les modifications sont gardées et seront envoyées au retour du réseau.'],
+  error: ['☁', 'var(--danger)', 'Erreur de synchronisation.']
+};
+function setState(s, msg) {
+  state = s; stateMsg = msg || '';
+  const btn = $('fb-btn'); if (!btn) return;
+  const L = LABEL[s] || LABEL.init;
+  btn.style.color = L[1];
+  btn.title = 'Synchronisation : ' + L[2];
+  if ($('fb-pop') && $('fb-pop').classList.contains('on')) renderPop();
+}
+function renderPop() {
+  const p = $('fb-pop'); const L = LABEL[state] || LABEL.init;
+  let h = '<div class="fb-h">☁ Synchronisation</div><div class="fb-st" style="color:' + L[1] + '">' + escH(L[2]) + '</div>';
+  if (stateMsg) h += '<div class="fb-m">' + escH(stateMsg) + '</div>';
+  if (user) h += '<div class="fb-m">Compte : ' + escH(user.email) + '</div>';
+  if (lastOk && state === 'ok') h += '<div class="fb-m">Dernier envoi : ' + lastOk.toLocaleTimeString('fr-FR') + '</div>';
+  if (dirty.size) h += '<div class="fb-m">En attente : ' + dirty.size + ' base(s)</div>';
+  h += '<div class="fb-row">';
+  if (state !== 'file' && state !== 'init' && typeof firebase !== 'undefined') {
+    if (!user) h += '<button class="btn bp btn-sm" data-a="in">Se connecter avec Google</button>';
+    else {
+      if (ready) h += '<button class="btn bs btn-sm" data-a="now">Synchroniser</button><button class="btn bs btn-sm" data-a="reset">Reprendre les données de l\'équipe</button>';
+      h += '<button class="btn bs btn-sm" data-a="out">Se déconnecter</button>';
+    }
+  }
+  h += '</div>';
+  p.innerHTML = h;
+}
+function injectUI() {
+  const css = document.createElement('style');
+  css.textContent =
+    '#fb-btn{position:relative;font-size:17px}' +
+    '#fb-pop{position:fixed;left:72px;bottom:16px;z-index:9000;width:290px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.35);display:none;color:var(--text);font-size:12.5px}' +
+    '#fb-pop.on{display:block}.fb-h{font-weight:700;font-size:14px;margin-bottom:8px}.fb-st{margin-bottom:6px;line-height:1.4}.fb-m{color:var(--muted);font-size:11.5px;margin-top:4px;word-break:break-word}' +
+    '.fb-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;justify-content:flex-end}' +
+    '.fb-ov{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px}' +
+    '.fb-dlg{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:20px;max-width:440px;font-size:13px;line-height:1.5}.fb-dlg h3{margin:0 0 10px;font-size:15px}.fb-dlg p{margin:0 0 10px}' +
+    '#fb-banner{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9000;background:var(--surface);color:var(--text);border:1px solid var(--accent);border-radius:10px;padding:8px 10px 8px 14px;display:none;align-items:center;gap:10px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.3);max-width:calc(100vw - 32px)}' +
+    '#fb-banner.on{display:flex}.fb-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px}' +
+    // Téléphone : la page est plus large que l'écran, les boutons du bas de la barre sortaient de l'écran
+    '@media(max-width:768px){.app-rail-footer{margin-left:6px!important}#fb-pop{left:8px;right:auto;width:300px;max-width:calc(100% - 16px);top:64px;bottom:auto}#fb-banner{top:62px}}';
+  document.head.appendChild(css);
+  const foot = document.querySelector('.app-rail-footer');
+  const btn = document.createElement('button');
+  btn.className = 'app-rail-add'; btn.id = 'fb-btn'; btn.textContent = '☁';
+  if (foot) foot.insertBefore(btn, foot.firstChild); else document.body.appendChild(btn);
+  const pop = document.createElement('div'); pop.id = 'fb-pop'; document.body.appendChild(pop);
+  btn.addEventListener('click', e => { e.stopPropagation(); pop.classList.toggle('on'); if (pop.classList.contains('on')) renderPop(); });
+  document.addEventListener('click', e => { if (!pop.contains(e.target) && e.target !== btn) pop.classList.remove('on'); });
+  pop.addEventListener('click', e => {
+    const a = e.target.dataset && e.target.dataset.a; if (!a) return;
+    if (a === 'in') signIn();
+    if (a === 'out') signOut();
+    if (a === 'now') { Object.keys(KEYS).forEach(k => dirty.add(k)); saveDirty(); schedule(); }
+    if (a === 'reset' && confirm('Remplacer les données de ce poste par celles de l\'équipe ?\nLes modifications locales pas encore envoyées seront perdues.')) run(() => resetFromRemote(Object.keys(KEYS)));
+    pop.classList.remove('on');
+  });
+  trackViews();
+  setState(state);
+}
+
+document.addEventListener('DOMContentLoaded', start);
+
+// Pour les tests et le dépannage (console)
+window.fbSync = { state: () => state, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS };
+})();
+</script>
 </body>
 </html>

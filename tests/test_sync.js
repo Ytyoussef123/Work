@@ -1,0 +1,223 @@
+// Lancer : node tests/test_sync.js   (Playwright requis ; aucun accès réseau ni compte Firebase nécessaire)
+// Test de la synchro Firebase de plateforme.html avec un faux serveur (plusieurs "postes").
+const { chromium } = require('playwright');
+const fs = require('fs'), path = require('path');
+const APP = process.argv[2] || path.join(__dirname, '..', 'plateforme.html');
+const MOCK = fs.readFileSync(path.join(__dirname, 'mock_firebase.js'), 'utf8');
+const HTML = fs.readFileSync(APP, 'utf8');
+
+// ─── Faux serveur ───
+const docs = new Map(), files = new Map(), listens = [];
+const members = new Set(['a@test.fr', 'b@test.fr', 'c@test.fr']);
+const stats = { writes: 0, puts: 0 };
+const pages = new Map();
+async function broadcast(path, changes) {
+  for (const l of listens) if (l.path === path) {
+    const p = pages.get(l.pid); if (!p || p.isClosed()) continue;
+    p.evaluate(([lid, ch]) => window.__mockFire && window.__mockFire(lid, ch), [l.lid, changes]).catch(() => {});
+  }
+}
+function backend(pid) {
+  return async (op, a) => {
+    if (op === 'getDoc') { if (a.path.startsWith('membres/')) return members.has(a.path.slice(8)) ? { ok: 1 } : null; return docs.get(a.path) || null; }
+    if (op === 'list') return [...docs.entries()].filter(([p]) => p.startsWith(a.path + '/') && !p.slice(a.path.length + 1).includes('/')).map(([p, d]) => ({ id: p.split('/').pop(), data: d }));
+    if (op === 'listen') {
+      listens.push({ pid, path: a.path, lid: a.lid });
+      const init = [...docs.entries()].filter(([p]) => p.startsWith(a.path + '/') && !p.slice(a.path.length + 1).includes('/')).map(([p, d]) => ({ type: 'added', id: p.split('/').pop(), data: d }));
+      setTimeout(() => pages.get(pid).evaluate(([lid, ch]) => window.__mockFire(lid, ch), [a.lid, init]).catch(() => {}), 5);
+      return true;
+    }
+    if (op === 'unlisten') { const i = listens.findIndex(l => l.lid === a.lid); if (i >= 0) listens.splice(i, 1); return true; }
+    if (op === 'commit') {
+      if (!members.has(a.email)) return { error: 'permission-denied' };
+      const byColl = {};
+      for (const o of a.ops) {
+        stats.writes++;
+        const coll = o.path.split('/').slice(0, -1).join('/'), id = o.path.split('/').pop();
+        const had = docs.has(o.path);
+        if (o.t === 'set') { docs.set(o.path, o.data); (byColl[coll] = byColl[coll] || []).push({ type: had ? 'modified' : 'added', id, data: o.data }); }
+        else if (had) { docs.delete(o.path); (byColl[coll] = byColl[coll] || []).push({ type: 'removed', id }); }
+      }
+      for (const c in byColl) await broadcast(c, byColl[c]);
+      return true;
+    }
+    if (op === 'put') { stats.puts++; files.set(a.path, a.data); return true; }
+    if (op === 'url') return files.has(a.path) ? 'https://firebasestorage.googleapis.com/v0/b/work-75094.firebasestorage.app/o/' + encodeURIComponent(a.path) + '?alt=media&token=t1' : null;
+  };
+}
+
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const PNG2 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNkYPj/n4GBgYGJAQoAGRUBA0bdtZ8AAAAASUVORK5CYII=';
+
+let browser;
+const errors = [];
+async function device(name, seed, email) {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  pages.set(name, page);
+  page.on('pageerror', e => errors.push(name + ': ' + e.message));
+  page.on('dialog', d => { const h = page.__dialog || 'accept'; h === 'accept' ? d.accept() : d.dismiss(); });
+  await page.exposeFunction('__be', backend(name));
+  await ctx.route('**/*', async route => {
+    const u = route.request().url();
+    if (u.startsWith('http://app.test/')) return route.fulfill({ contentType: 'text/html', body: HTML });
+    if (u.includes('/firebasejs/') || u.includes('npm/firebase@')) return route.fulfill({ contentType: 'text/javascript', body: u.includes('-app-compat') ? MOCK : '' });
+    if (u.startsWith('https://firebasestorage.googleapis.com/')) {
+      const p = decodeURIComponent(u.split('/o/')[1].split('?')[0]); const d = files.get(p);
+      if (!d) return route.fulfill({ status: 404, body: '' });
+      const [h, b64] = d.split(','); return route.fulfill({ status: 200, contentType: h.slice(5).split(';')[0], headers: { 'access-control-allow-origin': '*' }, body: Buffer.from(b64, 'base64') });
+    }
+    return route.abort();
+  });
+  if (seed) await page.addInitScript(s => { if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); for (const k in s) localStorage.setItem(k, s[k]); } }, seed);
+  await page.addInitScript(e => { window.__mockEmail = e; }, email);
+  await page.goto('http://app.test/plateforme.html');
+  await page.waitForFunction(() => window.fbSync && typeof window.fbSync.state === 'function');
+  return page;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitState(p, s, ms = 8000) { const t = Date.now(); while (Date.now() - t < ms) { if (await p.evaluate(() => fbSync.state()) === s) return true; await sleep(100); } throw new Error('state ' + s + ' not reached, got ' + await p.evaluate(() => fbSync.state())); }
+const login = (p, e) => p.evaluate(e => window.__mockLogin(e), e);
+const getLS = (p, k) => p.evaluate(k => JSON.parse(localStorage.getItem(k)), k);
+let pass = 0, fail = 0;
+const canon = v => JSON.stringify(v, function (k, x) { if (Array.isArray(x)) return x.every(e => e && e.id) ? [...x].sort((a, b) => String(a.id).localeCompare(String(b.id))) : x; if (x && typeof x === 'object') return Object.keys(x).sort().reduce((o, kk) => (o[kk] = x[kk], o), {}); return x; });
+function check(name, ok, extra) { if (ok) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra !== undefined ? JSON.stringify(extra).slice(0, 300) : ''); } }
+async function settle(...ps) { await sleep(400); for (const p of ps) { const t = Date.now(); while (Date.now() - t < 8000 && (await p.evaluate(() => fbSync.dirty().length || fbSync.state() === 'sync'))) await sleep(100); } await sleep(500); }
+
+(async () => {
+  browser = await chromium.launch();
+  // Données de départ du poste A
+  const purchasesA = [1, 2, 3].map(i => ({ id: 'ID100' + i, line: i, projet: 'P' + i, description: 'Achat ' + i, puHT: 10 * i, quantite: 1, capexOpex: 'OPEX', attachments: i === 1 ? [{ id: 'Fatt1', name: 'offre.pdf', size: 5, type: 'application/pdf' }] : [] }));
+  const engA = { companies: [{ id: 'ec1', name: 'Akwel' }], types: [{ id: 'et1', name: 'Sensor', fields: [] }], solutions: [{ id: 'es1', name: 'Sol 1', specHtml: '<p>Texte</p><img src="' + PNG + '" width="120">' }], projects: [], acceptances: [], branding: { logo: PNG2, docname: 'Doc', label: 'TS', conf: '', code: '' } };
+  const pmA = { projects: [{ id: 'Pp1', name: 'Projet 1', products: [{ id: 'pr1', name: 'Tube', bom: [{ id: 'b1', ref: 'R1', photo: PNG2, sub: null }] }], tools: [] }], customers: [{ id: 'Pc1', name: 'FORD' }], lines: [], actions: [] };
+  const SA = { projets: ['P1', 'P2', 'P3'], fournisseurs: ['F1'], references: [], acheteurs: ['YT'], budgets: [{ id: 'B1', projet: 'P1', type: 'OPEX', label: 'Budget 1', montant: 1000 }] };
+  const seedA = { suivi_autosave: JSON.stringify(purchasesA), eng_db: JSON.stringify(engA), pm_db: JSON.stringify(pmA), suivi_settings: JSON.stringify(SA), hp_suppliers: JSON.stringify({ F1: { delai: '2 sem' } }) };
+
+  console.log('1. Poste A : première connexion, serveur vide → envoi de tout');
+  const A = await device('A', seedA, 'a@test.fr');
+  await waitState(A, 'out');
+  check('état « non connecté » avant connexion', true);
+  check('les achats locaux sont affichés', (await A.evaluate(() => purchases.length)) === 3);
+  // pièce jointe locale dans hp_files
+  await A.evaluate(() => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => { const t = r.result.transaction('files', 'readwrite'); t.objectStore('files').put({ blob: new Blob(['%PDF-'], { type: 'application/pdf' }), name: 'offre.pdf', type: 'application/pdf' }, 'Fatt1'); t.oncomplete = res; }; }));
+  await login(A, 'a@test.fr');
+  await settle(A);
+  check('état « synchronisé »', (await A.evaluate(() => fbSync.state())) === 'ok', await A.evaluate(() => fbSync.state()));
+  const pdocs = [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/'));
+  check('un document par achat (3)', pdocs.length === 3, pdocs);
+  const sol = docs.get('app/eng_db/r/solutions:es1');
+  check('solution envoyée avec l\'image remplacée par un jeton', sol && /fbimg:[0-9a-f]{16}/.test(sol.j) && !sol.j.includes('base64'), sol && sol.j.slice(0, 200));
+  check('images envoyées dans Storage', [...files.keys()].filter(k => k.startsWith('app/img/')).length === 2, [...files.keys()]);
+  check('pièce jointe envoyée dans Storage', files.has('app/files/Fatt1'));
+  check('aucun document > 1 Mo', [...docs.values()].every(d => JSON.stringify(d).length < 1000000));
+
+  console.log('2. Poste B vide : reçoit tout');
+  const B = await device('B', null, 'b@test.fr');
+  await login(B, 'b@test.fr');
+  await settle(B);
+  const pb = await getLS(B, 'suivi_autosave');
+  check('B a les 3 achats', pb && pb.length === 3, pb);
+  check('variable purchases de B à jour', (await B.evaluate(() => purchases.length)) === 3);
+  const eb = await getLS(B, 'eng_db');
+  check('B : image de la solution redevenue data URL', eb && eb.solutions[0].specHtml.includes(PNG), eb && eb.solutions[0].specHtml.slice(0, 120));
+  check('B : logo identique', eb && eb.branding.logo === PNG2);
+  const pmb = await getLS(B, 'pm_db');
+  check('B : photo BOM identique', pmb && pmb.projects[0].products[0].bom[0].photo === PNG2);
+  check('B : paramètres et budgets', JSON.stringify(await getLS(B, 'suivi_settings')) === JSON.stringify(SA), await getLS(B, 'suivi_settings'));
+  check('B : fiches fournisseurs', (await getLS(B, 'hp_suppliers')).F1.delai === '2 sem');
+  await sleep(500);
+  const hasAtt = await B.evaluate(() => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => { const q = r.result.transaction('files').objectStore('files').get('Fatt1'); q.onsuccess = () => res(!!(q.result && q.result.blob)); }; }));
+  check('B : pièce jointe téléchargée dans hp_files', hasAtt);
+  const w0 = stats.writes;
+  check('B n\'a rien renvoyé au serveur', stats.writes === w0);
+
+  console.log('3. A ajoute un achat → B le reçoit');
+  await A.evaluate(() => { purchases.push({ id: 'ID2001', line: 4, projet: 'P1', description: 'Nouveau', puHT: 5, quantite: 2, capexOpex: 'OPEX' }); autosave(); });
+  await settle(A, B);
+  check('B a 4 achats', (await B.evaluate(() => purchases.length)) === 4);
+  check('tableau de B mis à jour (badge)', (await B.evaluate(() => document.getElementById('totalBadge').textContent)) === '4', await B.evaluate(() => document.getElementById('totalBadge').textContent));
+  check('une seule écriture pour un ajout', stats.writes - w0 === 1, stats.writes - w0);
+
+  console.log('4. Modifications croisées : B modifie l\'achat 2, A supprime l\'achat 3');
+  await B.evaluate(() => { const p = purchases.find(p => p.id === 'ID1002'); p.description = 'Modifié par B'; autosave(); });
+  await A.evaluate(() => { const i = purchases.findIndex(p => p.id === 'ID1003'); purchases.splice(i, 1); autosave(); });
+  await settle(A, B);
+  const pa = await getLS(A, 'suivi_autosave'), pb2 = await getLS(B, 'suivi_autosave');
+  check('A et B identiques', JSON.stringify(pa) === JSON.stringify(pb2), [pa.map(p => p.id), pb2.map(p => p.id)]);
+  check('modification de B présente chez A', pa.find(p => p.id === 'ID1002').description === 'Modifié par B');
+  check('achat 3 supprimé chez B', !pb2.find(p => p.id === 'ID1003'));
+
+  console.log('5. Engineering : A modifie une solution (projet ouvert chez B)');
+  await B.evaluate(() => { switchApp('engineering'); });
+  await A.evaluate(() => { switchApp('engineering'); const s = engDB.solutions[0]; s.name = 'Sol 1 bis'; s.specHtml += '<img src="' + 'data:image/png;base64,' + btoa('nouvelle-image-' + 'x'.repeat(50)) + '">'; engSave(); });
+  await settle(A, B);
+  check('engDB de B à jour', (await B.evaluate(() => engDB.solutions[0].name)) === 'Sol 1 bis');
+  check('bandeau « mis à jour par l\'équipe » chez B', await B.evaluate(() => !!document.querySelector('#fb-banner.on')));
+  check('nouvelle image envoyée', [...files.keys()].filter(k => k.startsWith('app/img/')).length === 3);
+  await B.click('#fb-banner-go');
+  check('actualisation sans erreur', true);
+
+  console.log('6. Gros enregistrement (> 900 000 caractères) découpé');
+  await A.evaluate(() => { pmDB.projects[0].comments = 'x'.repeat(2100000); pmSave(); });
+  await settle(A, B);
+  const chunks = [...docs.keys()].filter(k => k.startsWith('app/pm_db/r/projects:Pp1'));
+  check('projet découpé en 3 documents', chunks.length === 3, chunks);
+  check('B a le projet complet', (await B.evaluate(() => JSON.parse(localStorage.getItem('pm_db')).projects[0].comments.length)) === 2100000);
+  await A.evaluate(() => { pmDB.projects[0].comments = 'court'; pmSave(); });
+  await settle(A, B);
+  check('morceaux en trop effacés après réduction', [...docs.keys()].filter(k => k.startsWith('app/pm_db/r/projects:Pp1')).length === 1);
+  check('B a la version courte', (await B.evaluate(() => JSON.parse(localStorage.getItem('pm_db')).projects[0].comments)) === 'court');
+
+  console.log('7. Poste C avec ses propres données : fusion');
+  const seedC = { suivi_autosave: JSON.stringify([{ id: 'IDC1', line: 1, projet: 'PC', description: 'Achat de C', puHT: 1, quantite: 1 }]), suivi_settings: JSON.stringify({ projets: ['PC'], fournisseurs: [], references: [], acheteurs: [], budgets: [] }) };
+  const C = await device('C', seedC, 'c@test.fr');
+  await login(C, 'c@test.fr');
+  await C.waitForSelector('.fb-dlg', { timeout: 8000 });
+  check('question fusionner / remplacer affichée', true);
+  await C.click('.fb-dlg [data-m="merge"]');
+  await settle(C, A, B);
+  const pc = await getLS(C, 'suivi_autosave'), pa2 = await getLS(A, 'suivi_autosave');
+  check('C a les achats de l\'équipe + le sien (4)', pc.length === 4, pc.map(p => p.id));
+  check('A reçoit l\'achat de C', !!pa2.find(p => p.id === 'IDC1'));
+  check('liste des projets fusionnée', JSON.stringify((await getLS(A, 'suivi_settings')).projets.sort()) === JSON.stringify(['P1', 'P2', 'P3', 'PC']), (await getLS(A, 'suivi_settings')).projets);
+
+  console.log('8. Garde-fou : A efface tous les achats, puis annule');
+  A.__dialog = 'dismiss';
+  await A.evaluate(() => { purchases.length = 0; autosave(); });
+  await settle(A);
+  A.__dialog = 'accept';
+  check('rien n\'a été effacé sur le serveur', [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/')).length === 4);
+  check('A a récupéré les achats de l\'équipe', (await A.evaluate(() => purchases.length)) === 4);
+
+  console.log('9. Hors ligne puis retour du réseau');
+  await B.evaluate(() => { window.__mockOffline = true; });
+  await B.evaluate(() => { purchases.find(p => p.id === 'ID1001').observations = 'hors ligne'; autosave(); });
+  await sleep(2000);
+  check('A ne voit pas encore la modif', !(await getLS(A, 'suivi_autosave')).find(p => p.id === 'ID1001').observations);
+  // relance simulée : Firestore renvoie la file d'attente au retour du réseau
+  await B.evaluate(() => { window.__mockOffline = false; });
+  await B.evaluate(() => { const b = fbSync.base(); delete b.suivi_autosave['r:ID1001']; localStorage.setItem('fb_base', JSON.stringify(b)); });
+  await B.evaluate(() => { purchases.find(p => p.id === 'ID1001').observations = 'hors ligne'; autosave(); });
+  await settle(B, A);
+  check('A reçoit la modif après retour', (await getLS(A, 'suivi_autosave')).find(p => p.id === 'ID1001').observations === 'hors ligne');
+
+  console.log('10. Compte non autorisé');
+  const D = await device('D', null, 'x@inconnu.fr');
+  await login(D, 'x@inconnu.fr');
+  await waitState(D, 'denied');
+  check('état « non autorisé »', true);
+
+  console.log('11. Rechargement de A : pas de renvoi, données intactes');
+  const w1 = stats.writes;
+  await A.reload(); await A.waitForFunction(() => window.fbSync);
+  await waitState(A, 'out'); await login(A, 'a@test.fr');
+  await settle(A);
+  check('A rechargé : synchronisé sans question', (await A.evaluate(() => fbSync.state())) === 'ok' && !(await A.$('.fb-dlg')));
+  check('aucune écriture au rechargement', stats.writes === w1, stats.writes - w1);
+  for (const k of ['suivi_autosave','suivi_settings','eng_db','pm_db','hp_suppliers']) check('A, B, C identiques : ' + k, canon(await getLS(A, k)) === canon(await getLS(B, k)) && canon(await getLS(B, k)) === canon(await getLS(C, k)));
+
+  check('aucune erreur JavaScript', errors.length === 0, errors);
+  console.log(`\n${pass} réussis, ${fail} échoués`);
+  await browser.close();
+  process.exit(fail ? 1 : 0);
+})().catch(async e => { console.error('ERREUR', e); console.error(errors); try { await browser.close(); } catch (x) {} process.exit(2); });
