@@ -36,7 +36,8 @@ function backend(pid) {
         stats.writes++;
         const coll = o.path.split('/').slice(0, -1).join('/'), id = o.path.split('/').pop();
         const had = docs.has(o.path);
-        if (o.t === 'set') { docs.set(o.path, o.data); (byColl[coll] = byColl[coll] || []).push({ type: had ? 'modified' : 'added', id, data: o.data }); }
+        if (o.t === 'merge') o.data = Object.assign({}, docs.get(o.path) || {}, o.data);   // set(..., { merge: true })
+        if (o.t === 'set' || o.t === 'merge') { docs.set(o.path, o.data); (byColl[coll] = byColl[coll] || []).push({ type: had ? 'modified' : 'added', id, data: o.data }); }
         else if (had) { docs.delete(o.path); (byColl[coll] = byColl[coll] || []).push({ type: 'removed', id }); }
       }
       for (const c in byColl) await broadcast(c, byColl[c]);
@@ -347,6 +348,64 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   await A.evaluate(() => editRow('IDPJ2'));
   r = await waitAtt(A, '⚠ trop gros (20 Mo max)', 1);
   check('plus de 20 Mo : « ⚠ trop gros (20 Mo max) » à côté du fichier', r === true, r);
+
+  console.log('15. Rappels : inscription de l\'appareil, préférences, test, lien des notifications');
+  // Le faux site (http://app.test) n'est pas « sécurisé » : service worker et notifications simulés
+  const stubPush = p => p.evaluate(() => {
+    window.__notifs = [];
+    const reg = { showNotification: async (t, o) => { window.__notifs.push([t, o]); } };
+    const sw = { register: async u => { window.__swUrl = u; return reg; }, ready: Promise.resolve(reg), addEventListener() {} };
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, get: () => sw });
+    if (!window.PushManager) window.PushManager = function () {};
+    if (!window.Notification) window.Notification = {};
+    Object.defineProperty(window.Notification, 'permission', { configurable: true, get: () => 'granted' });
+    window.Notification.requestPermission = async () => 'granted';
+  });
+  await stubPush(A); await stubPush(D);
+  await A.evaluate(() => {
+    const d = n => { const x = new Date(); x.setDate(x.getDate() + n); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+    pmDB.projects[0].tools = [{ id: 'Trp', name: 'Moule test', status: 'En cours',
+      milestones: [{ id: 'Mrp1', label: 'RFQ moule', status: 'À faire', date: d(3) }, { id: 'Mrp2', label: 'PO moule', status: 'Fait', date: d(1) }, { id: 'Mrp3', label: 'Trial Run', status: 'À faire', date: d(30) }],
+      notes: [{ id: 'Nrp1', kind: 'Action', text: 'Relancer le fournisseur', status: 'À faire', urgency: 'Haute', dueDate: d(5) }], subtools: [] }];
+    pmSave(); switchApp('projects'); pmGo('settings');
+  });
+  await settle(A, B);
+  let panel = await A.evaluate(() => document.getElementById('rp-panel').textContent);
+  check('panneau Rappels dans Projets › Settings, avec le bouton Activer', /Rappels/.test(panel) && !!(await A.$('#rp-panel [data-rap="on"]')), panel.slice(0, 200));
+  check('à venir : jalon et action des 7 jours (pas le jalon fait, pas celui à 30 jours)', /RFQ moule/.test(panel) && /Relancer le fournisseur/.test(panel) && !/PO moule/.test(panel) && !/Trial Run/.test(panel) && /dans 3 jours/.test(panel), panel);
+  await A.click('#rp-panel [data-rap="on"]');
+  const devKey = () => [...docs.keys()].find(k => k.startsWith('app/_rappels/appareils/'));
+  await waitFor(async () => !!devKey());
+  const dev = docs.get(devKey() || '') || {};
+  check('Activer : appareil inscrit (jeton, préférences, fuseau, compte)', dev.token === 'tok-a@test.fr' && dev.prefs && dev.prefs.j7 === true && dev.prefs.actions === true && !!dev.tz && dev.email === 'a@test.fr', dev);
+  check('service worker « sw.js » enregistré', (await A.evaluate(() => window.__swUrl)) === 'sw.js');
+  check('panneau : « ✓ Activé sur cet appareil »', /Activé sur cet appareil/.test(await A.evaluate(() => document.getElementById('rp-panel').textContent)));
+  await A.click('#rp-panel input[data-rap-pref="j3"]');
+  check('préférence « 3 jours avant » enregistrée en ligne', await waitFor(async () => ((docs.get(devKey()) || {}).prefs || {}).j3 === true));
+  await A.click('#rp-panel [data-rap="test"]');
+  check('Tester : notification affichée sur l\'appareil', await waitFor(async () => (await A.evaluate(() => window.__notifs.map(n => n[0]))).includes('🔔 Test des rappels')));
+  await A.evaluate(() => window.__mockMessaging.onMessage({ data: { title: 'Jalon demain (13/11)', body: 'RFQ', url: 'plateforme.html#rappel=liste', tag: 'rappel-m:Mrp1' } }));
+  check('rappel reçu app ouverte : notification affichée quand même', await waitFor(async () => (await A.evaluate(() => window.__notifs.map(n => n[0]))).includes('Jalon demain (13/11)')));
+  // Clé Web Push enregistrée pour l'équipe, puis utilisée à la prochaine inscription
+  await A.evaluate(() => { document.getElementById('rp-vapid').value = 'BCLEPUBLIQUE'; document.querySelector('#rp-panel [data-rap="vapid"]').click(); });
+  check('clé Web Push enregistrée dans app/_rappels', await waitFor(async () => (docs.get('app/_rappels') || {}).vapid === 'BCLEPUBLIQUE'));
+  await A.click('#rp-panel [data-rap="off"]');
+  check('Désactiver : appareil retiré, jeton supprimé', await waitFor(async () => !devKey()) && (await A.evaluate(() => window.__mockMessaging.deleted)) >= 1 && !(await A.evaluate(() => fbSync.rappels.local().on)));
+  await A.click('#rp-panel [data-rap="on"]');
+  await waitFor(async () => !!devKey());
+  check('nouvelle inscription : avec la clé Web Push de l\'équipe', (await A.evaluate(() => window.__mockMessaging.vapid)) === 'BCLEPUBLIQUE' && !!devKey());
+  check('le même appareil garde son identifiant', [...docs.keys()].filter(k => k.startsWith('app/_rappels/appareils/')).length === 1);
+  // Lien d'une notification : ouvre l'outil (poste B, qui a reçu le projet)
+  await B.evaluate(() => { location.hash = '#rappel=p/Pp1/t/Trp'; });
+  await waitFor(async () => (await B.evaluate(() => typeof pmEditingTool !== 'undefined' && pmEditingTool === 0)), 5000);
+  const opened3 = await B.evaluate(() => ({ proj: pmCurProj && pmCurProj.id, tool: pmEditingTool, page: document.getElementById('ppage-projects').style.display, hash: location.hash }));
+  check('lien de notification : projet et outil ouverts, adresse nettoyée', opened3.proj === 'Pp1' && opened3.tool === 0 && opened3.page === 'block' && opened3.hash === '', opened3);
+  await B.evaluate(() => fbSync.rappels.fromUrl('https://ytyoussef123.github.io/Work/plateforme.html#rappel=a'));
+  check('lien vers une action générale : plan d\'actions', (await B.evaluate(() => document.getElementById('ppage-actions').style.display)) === 'block');
+  await D.evaluate(() => { switchApp('projects'); pmGo('settings'); });
+  await sleep(200);
+  panel = await D.evaluate(() => document.getElementById('rp-panel').textContent);
+  check('compte non autorisé : « Connectez-vous », pas de bouton Activer', /Connectez-vous avec ☁/.test(panel) && !(await D.$('#rp-panel [data-rap="on"]')), panel.slice(0, 200));
 
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);

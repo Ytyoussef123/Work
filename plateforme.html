@@ -11157,6 +11157,7 @@ async function onUser(u) {
     if (zipKeys.size) run(askZip);
     if (dirty.size) schedule(); else { lastOk = new Date(); setState('ok'); }
     pullFiles();
+    rpStartup();   // rappels : jeton de notification de ce poste tenu à jour
   });
 }
 // Achats sans identifiant (anciennes données) : on leur en donne un, sinon impossible de les synchroniser
@@ -11197,10 +11198,229 @@ function wrapZipLoad() {
     finally { zipDepth--; }
   };
 }
+// ─── RAPPELS (V6) : notifications des jalons d'outils et des actions datées ────────────────
+// Chaque poste choisit de recevoir les rappels (Projets › Settings › Rappels). Son jeton de notification
+// est rangé dans app/_rappels/appareils/<id> ; la fonction planifiée du dossier functions/ envoie chaque
+// matin les rappels, que sw.js affiche même application fermée. Mêmes règles que functions/rappels.js
+// (les garder d'accord ; tests : test_rappels.js et test_sync.js section 15).
+const RP_LS = 'rappels_appareil';                                   // propre au poste : jamais synchronisé
+const RP_DEF = { j7: true, j3: false, j0: false, retard: false, actions: true };
+const RP_STAGES = [['j7', '7 jours avant'], ['j3', '3 jours avant'], ['j0', 'le jour même'], ['retard', 'en retard (une fois)']];
+const RP_DONE = new Set(['Fait', 'N-A']);                           // jalon / action terminé ou sans objet
+const rpLocal = () => { const d = jget(RP_LS, {}) || {}; return { id: d.id || '', token: d.token || '', on: !!d.on, prefs: Object.assign({}, RP_DEF, d.prefs || {}) }; };
+const rpRoot = () => db.collection('app').doc('_rappels');
+const rpDev = id => rpRoot().collection('appareils').doc(id);
+let rpReg = null, rpMsg = null, rpErr = '', rpBusy = false, rpInfo = null, rpInfoAt = 0;
+
+// Échéances suivies : jalons non faits des outils et sous-outils, actions datées non faites
+function rpItems(pm) {
+  const items = [], ISO = /^\d{4}-\d{2}-\d{2}$/;
+  const add = (pre, kind, x, date, label, where, link) => {
+    if (!ISO.test(date || '')) return;
+    const id = x.id || [link.p, link.t, link.s, label].filter(Boolean).join('/');
+    items.push({ key: pre + id, kind, date, label: String(label || '').slice(0, 120), where, link });
+  };
+  for (const p of (pm && pm.projects) || []) {
+    if (!p || p.status === 'Archived') continue;
+    for (const t of p.tools || []) {
+      if (!t || t.status === 'Terminé') continue;
+      const owners = [[t, (p.name || '') + ' › ' + (t.name || ''), { p: p.id, t: t.id }]];
+      for (const s of t.subtools || []) if (s && s.status !== 'Terminé') owners.push([s, (p.name || '') + ' › ' + (t.name || '') + ' › ' + (s.name || ''), { p: p.id, t: t.id, s: s.id }]);
+      for (const [o, where, link] of owners) {
+        for (const m of o.milestones || []) if (m && !RP_DONE.has(m.status)) add('m:', 'jalon', m, m.date, m.label, where, link);
+        for (const n of o.notes || []) if (n && n.kind === 'Action' && !RP_DONE.has(n.status)) add('n:', 'action', n, n.dueDate, n.text, where, link);
+      }
+    }
+  }
+  for (const a of (pm && pm.actions) || []) if (a && a.kind !== 'Note' && !RP_DONE.has(a.status)) add('a:', 'action', a, a.dueDate, a.text, 'Plan d\'actions', { a: 1 });
+  return items;
+}
+const rpToday = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+const rpDays = (a, b) => { const t = s => { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d); }; return Math.round((t(b) - t(a)) / 86400000); };
+const rpWhen = d => d < 0 ? 'en retard de ' + (-d) + ' j' : d === 0 ? 'aujourd\'hui' : d === 1 ? 'demain' : 'dans ' + d + ' jours';
+function rpUpcoming(prefs) {   // pour le panneau : 7 prochains jours (+ retards si demandés)
+  let pm = (typeof pmDB !== 'undefined' && pmDB && pmDB.projects && pmDB.projects.length) ? pmDB : null;
+  if (!pm) pm = parseLocal('pm_db');
+  const P = prefs || rpLocal().prefs, today = rpToday();
+  return rpItems(pm).map(x => Object.assign(x, { d: rpDays(today, x.date) }))
+    .filter(x => (x.kind !== 'action' || P.actions) && (x.d >= 0 ? x.d <= 7 : P.retard))
+    .sort((a, b) => a.d - b.d || a.label.localeCompare(b.label));
+}
+const rpLink = l => l && l.p ? ['p', l.p, 't', l.t].concat(l.s ? ['s', l.s] : []).map(encodeURIComponent).join('/') : 'a';
+
+// Notifications : sw.js + Firebase Cloud Messaging (chargé seulement quand on en a besoin)
+const rpSupported = () => 'serviceWorker' in navigator && 'Notification' in window && 'PushManager' in window;
+async function rpMessaging() {
+  if (!rpSupported()) throw new Error('ce navigateur ne gère pas les notifications (iPhone : ajouter d\'abord l\'app à l\'écran d\'accueil)');
+  if (!rpReg) { rpReg = await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready; }
+  if (!rpMsg) {
+    if (typeof firebase.messaging !== 'function')
+      await loadJs(['https://www.gstatic.com/firebasejs/' + FB_VER + '/firebase-messaging-compat.js',
+                    'https://cdn.jsdelivr.net/npm/firebase@' + FB_VER + '/firebase-messaging-compat.js']);
+    rpMsg = firebase.messaging();
+    rpMsg.onMessage(p => {   // application ouverte au premier plan : le rappel arrive ici, pas dans sw.js
+      const d = (p && p.data) || {};
+      if (typeof toast === 'function') toast('🔔', d.title || 'Rappel');
+      try { rpReg.showNotification(d.title || 'Rappel', { body: d.body || '', tag: d.tag || 'rappel', data: { url: d.url || 'plateforme.html' } }); } catch (e) {}
+    });
+  }
+  return rpMsg;
+}
+async function rpToken() {
+  const m = await rpMessaging();
+  let vapid = '';   // clé Web Push de l'équipe (Firebase › Cloud Messaging) si elle a été enregistrée
+  try { const r = await rpRoot().get(); vapid = (r.exists && (r.data() || {}).vapid) || ''; } catch (e) {}
+  const o = { serviceWorkerRegistration: rpReg }; if (vapid) o.vapidKey = vapid;
+  return m.getToken(o);
+}
+function rpSaveDev(L) {
+  return rpDev(L.id).set({ token: L.token, email: (user && user.email) || '', nom: localStorage.getItem('hp_user') || '', prefs: L.prefs,
+    tz: (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'Europe/Paris', ua: navigator.userAgent.slice(0, 160),
+    maj: firebase.firestore.FieldValue.serverTimestamp() });
+}
+async function rpEnable() {
+  if (!ready || !user) throw new Error('connectez-vous d\'abord avec ☁');
+  if (!rpSupported()) throw new Error('ce navigateur ne gère pas les notifications (iPhone : ajouter d\'abord l\'app à l\'écran d\'accueil)');
+  const perm = await Notification.requestPermission();   // la question du navigateur (pendant le clic)
+  if (perm !== 'granted') throw new Error(perm === 'denied' ? 'notifications bloquées pour ce site : autorisez-les dans les réglages du navigateur (🔒 à gauche de l\'adresse)' : 'autorisation non donnée');
+  const token = await rpToken();
+  if (!token) throw new Error('jeton de notification non obtenu');
+  const L = rpLocal(); L.id = L.id || rnd() + rnd(); L.token = token; L.on = true;
+  jset(RP_LS, L);
+  rpSaveDev(L).catch(e => console.warn('rappels', e));   // hors ligne : Firestore l'enverra au retour du réseau
+}
+async function rpDisable() {
+  const L = rpLocal(); L.on = false; jset(RP_LS, L);
+  if (L.id && db) rpDev(L.id).delete().catch(() => {});
+  try { await (await rpMessaging()).deleteToken(); } catch (e) {}
+}
+async function rpStartup() {   // poste déjà inscrit : jeton rafraîchi (il peut changer), sans rien demander
+  const L = rpLocal();
+  if (!L.on || !ready || !rpSupported() || Notification.permission !== 'granted') { rpRenderSoon(); return; }
+  try {
+    const token = await rpToken();
+    if (token && token !== L.token) { L.token = token; jset(RP_LS, L); }
+    rpSaveDev(L).catch(() => {});
+    rpErr = '';
+  } catch (e) { rpErr = (e && e.message) || String(e); }
+  rpRenderSoon();
+}
+function rpSetPref(k, v) {
+  const L = rpLocal(); L.prefs[k] = v; jset(RP_LS, L);
+  if (L.on && L.id && ready) rpSaveDev(L).catch(() => {});
+  rpRender();
+}
+
+// Ouvrir l'app sur l'échéance (lien des notifications : plateforme.html#rappel=p/<projet>/t/<outil>[/s/<sous-outil>], a, liste)
+function rpParse(s) {
+  if (!s || s === 'liste') return { liste: 1 };
+  if (s === 'a') return { a: 1 };
+  const p = s.split('/').map(decodeURIComponent), o = {};
+  for (let i = 0; i + 1 < p.length; i += 2) o[p[i]] = p[i + 1];
+  return o;
+}
+function rpGo(spec) {
+  try {
+    if (typeof switchApp !== 'function') return;
+    switchApp('projects');
+    if (spec.liste) { pmGo('settings'); setTimeout(() => { const el = $('rp-panel'); if (el) el.scrollIntoView({ block: 'start' }); }, 60); return; }
+    if (spec.a || !spec.p || !(pmDB.projects || []).some(x => x.id === spec.p)) { pmGo('actions'); return; }
+    pmEditProject(spec.p); pmShowTab('outils');
+    const ti = (pmCurProj.tools || []).findIndex(t => t.id === spec.t);
+    if (ti < 0) return;
+    pmEditTool(ti);
+    if (spec.s) { const si = (pmCurProj.tools[ti].subtools || []).findIndex(s => s.id === spec.s); if (si >= 0) { pmToolSubTab = 'sous'; pmEditSubtool(si); } }
+  } catch (e) { console.warn('rappel', e); }
+}
+function rpFromUrl(u) { const m = /#rappel=(.*)$/.exec(u || ''); if (m) rpGo(rpParse(m[1])); return !!m; }
+function rpFromHash() {
+  if (!/^#rappel=/.test(location.hash || '')) return;
+  const h = location.hash;
+  history.replaceState(null, '', location.pathname + location.search);
+  setTimeout(() => rpFromUrl(h), 300);
+}
+
+// Panneau « Rappels » dans Projets › Settings
+function rpPanel() {
+  let el = $('rp-panel'); if (el) return el;
+  const page = $('ppage-settings'); if (!page) return null;
+  el = document.createElement('div'); el.id = 'rp-panel'; el.className = 'panel'; el.style.cssText = 'max-width:560px;margin-top:16px';
+  page.appendChild(el);
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-rap]'); if (!b || rpBusy) return;
+    const a = b.dataset.rap;
+    if (a === 'go') { rpGo(rpParse(b.dataset.link)); return; }
+    const job = a === 'on' ? rpEnable() : a === 'off' ? rpDisable() : a === 'test' ? rpMessaging().then(() => rpReg.showNotification('🔔 Test des rappels', { body: 'Les rappels s\'afficheront comme ceci sur cet appareil.', tag: 'rappel-test', data: { url: 'plateforme.html#rappel=liste' } }))
+      : a === 'vapid' ? rpRoot().set({ vapid: ($('rp-vapid') || {}).value ? $('rp-vapid').value.trim() : '' }, { merge: true }).then(() => { rpInfoAt = 0; if (typeof toast === 'function') toast('✓', 'Clé enregistrée pour toute l\'équipe'); }) : null;
+    if (!job) return;
+    rpBusy = true; rpErr = ''; rpRender();
+    job.then(() => { rpErr = ''; }, e => { rpErr = (e && e.message) || String(e); }).then(() => { rpBusy = false; rpRender(); });
+  });
+  el.addEventListener('change', e => { const k = e.target.dataset && e.target.dataset.rapPref; if (k) rpSetPref(k, e.target.checked); });
+  return el;
+}
+let rpT = null;
+function rpRenderSoon() { clearTimeout(rpT); rpT = setTimeout(rpRender, 50); }
+function rpRender() {
+  const el = rpPanel(); if (!el) return;
+  const page = $('ppage-settings');
+  if (page && page.style.display === 'none') return;                // page cachée : rien à redessiner
+  const vIn = $('rp-vapid');
+  if (vIn && document.activeElement === vIn) return;                 // clé en cours de saisie : ne pas l'effacer
+  const typed = vIn ? vIn.value : null, det = el.querySelector('details'), detOpen = !!(det && det.open);
+  const L = rpLocal();
+  if (ready && db && Date.now() - rpInfoAt > 60000) {               // état du serveur de rappels (lu au plus 1 fois/min)
+    rpInfoAt = Date.now();
+    rpRoot().get().then(r => { rpInfo = r.exists ? (r.data() || {}) : {}; rpRenderSoon(); }).catch(() => {});
+  }
+  let status, btns = '';
+  if (state === 'file') status = 'Indisponible : l\'app est ouverte comme fichier. Ouvrez-la depuis son adresse en ligne.';
+  else if (!rpSupported()) status = 'Ce navigateur ne gère pas les notifications (iPhone : ajouter d\'abord l\'app à l\'écran d\'accueil).';
+  else if (!ready || !user) status = 'Connectez-vous avec ☁ pour activer les rappels sur cet appareil.';
+  else if (L.on) { status = '<b style="color:var(--accent)">✓ Activé sur cet appareil</b>'; btns = '<button class="btn bs btn-sm" data-rap="test">Tester</button><button class="btn bs btn-sm" data-rap="off">Désactiver</button>'; }
+  else { status = 'Pas activé sur cet appareil.'; btns = '<button class="btn bp btn-sm" data-rap="on">🔔 Activer sur cet appareil</button>'; }
+  const prefs = RP_STAGES.map(([k, t]) => '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 6px 0;font-size:12.5px;cursor:pointer"><input type="checkbox" data-rap-pref="' + k + '"' + (L.prefs[k] ? ' checked' : '') + '>' + t + '</label>').join('') +
+    '<div style="margin-top:2px"><label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-rap-pref="actions"' + (L.prefs.actions ? ' checked' : '') + '>Aussi les actions datées (plan d\'actions, notes des outils)</label></div>';
+  const up = rpUpcoming(L.prefs);
+  const list = up.length ? up.slice(0, 8).map(x => '<div data-rap="go" data-link="' + escH(rpLink(x.link)) + '" style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--border);cursor:pointer">' +
+      '<span style="flex-shrink:0;min-width:92px;font-size:11.5px;font-weight:600;color:' + (x.d < 0 ? 'var(--danger)' : x.d <= 3 ? 'var(--warn)' : 'var(--accent2)') + '">' + escH(rpWhen(x.d)) + '</span>' +
+      '<span style="min-width:0;font-size:12.5px">' + (x.kind === 'jalon' ? '◆ ' : '☐ ') + escH(x.label) + '<span style="display:block;font-size:11px;color:var(--muted)">' + escH(x.where) + '</span></span></div>').join('') +
+      (up.length > 8 ? '<div style="font-size:11px;color:var(--muted);padding-top:6px">… et ' + (up.length - 8) + ' autre(s)</div>' : '')
+    : '<div style="font-size:12px;color:var(--muted)">Rien dans les 7 prochains jours.</div>';
+  const last = rpInfo && rpInfo.dernierPassage && rpInfo.dernierPassage.toDate ? rpInfo.dernierPassage.toDate() : null;
+  const server = !ready ? '' : last ? 'Serveur de rappels : dernier passage le ' + last.toLocaleDateString('fr-FR') + ' à ' + last.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + '.'
+    : rpInfo ? 'Serveur de rappels : pas encore en service (mise en place à faire une fois dans Firebase).' : '';
+  el.innerHTML = '<div class="ph"><div class="pt"><div class="dot" style="background:var(--accent2)"></div>🔔 Rappels (notifications)</div></div>' +
+    '<div class="pb" style="display:flex;flex-direction:column;gap:12px">' +
+    '<div style="font-size:12px;color:var(--muted);line-height:1.5">Une notification sur cet appareil quand un jalon d\'outil arrive à échéance, même l\'application fermée. Envoyée chaque matin.</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px"><span style="flex:1 1 200px">' + status + '</span>' + btns + '</div>' +
+    (rpBusy ? '<div style="font-size:12px;color:var(--accent2)">⏳ …</div>' : '') +
+    (rpErr ? '<div style="font-size:12px;color:var(--danger)">⚠ ' + escH(rpErr) + '</div>' : '') +
+    '<div><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Quand</div>' + prefs + '</div>' +
+    '<div><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">À venir (7 jours)</div>' + list + '</div>' +
+    (server ? '<div style="font-size:11px;color:var(--muted)">' + escH(server) + '</div>' : '') +
+    (ready ? '<details style="font-size:12px"><summary style="cursor:pointer;color:var(--muted)">Réglage (une fois pour l\'équipe) : clé Web Push</summary>' +
+      '<div style="margin-top:8px;color:var(--muted);line-height:1.5">Firebase › Paramètres du projet › Cloud Messaging › Configuration Web › Certificats Web Push : copier la « paire de clés » (clé publique).</div>' +
+      '<div style="display:flex;gap:6px;margin-top:6px"><input id="rp-vapid" type="text" placeholder="Clé publique (commence souvent par B…)" value="' + escH((rpInfo && rpInfo.vapid) || '') + '" style="flex:1;min-width:0"><button class="btn bs btn-sm" data-rap="vapid">Enregistrer</button></div></details>' : '') +
+    '</div>';
+  const d2 = el.querySelector('details'), v2 = $('rp-vapid');           // garder la section ouverte et la clé déjà collée
+  if (d2 && detOpen) d2.open = true;
+  if (v2 && typed && typed !== v2.value && !rpBusy) v2.value = typed;
+}
+function rpInit() {
+  rpPanel();
+  const og = window.pmGo;   // le panneau se redessine quand on ouvre Settings
+  if (typeof og === 'function') window.pmGo = function (v) { const r = og.apply(this, arguments); if (v === 'settings') rpRender(); return r; };
+  window.addEventListener('hashchange', rpFromHash);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.rappel) rpFromUrl(e.data.rappel); });
+  rpFromHash();
+}
+
 async function start() {
   wrapZipLoad();
   injectUI();
   wireAttachments();
+  rpInit();
   if (location.protocol === 'file:') { setState('file'); return; }
   setState('init');
   try {
@@ -11288,6 +11508,7 @@ function setState(s, msg) {
   state = s; stateMsg = msg || '';
   document.body.classList.toggle('fb-on', !!ready);   // connecté à l'équipe : le badge « Non sauvegardé » (fichier CSV) n'a plus de sens
   decorateSoon();
+  rpRenderSoon();   // panneau Rappels (s'il est affiché)
   const btn = $('fb-btn'); if (!btn) return;
   const L = LABEL[s] || LABEL.init;
   btn.style.color = L[1];
@@ -11305,7 +11526,7 @@ function renderPop() {
   if (state !== 'file' && state !== 'init' && typeof firebase !== 'undefined') {
     if (!user) h += '<button class="btn bp btn-sm" data-a="in">Se connecter avec Google</button>';
     else {
-      if (ready) h += '<button class="btn bs btn-sm" data-a="now">Synchroniser</button><button class="btn bs btn-sm" data-a="reset">Reprendre les données de l\'équipe</button>';
+      if (ready) h += '<button class="btn bs btn-sm" data-a="now">Synchroniser</button><button class="btn bs btn-sm" data-a="reset">Reprendre les données de l\'équipe</button><button class="btn bs btn-sm" data-a="rappels">🔔 Rappels</button>';
       h += '<button class="btn bs btn-sm" data-a="out">Se déconnecter</button>';
     }
   }
@@ -11325,6 +11546,9 @@ function injectUI() {
     '#fb-banner.on{display:flex}.fb-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px}' +
     // Pièces jointes : état « en ligne » à côté de chaque fichier. Connecté, tout part en ligne : le badge « Non sauvegardé » (export CSV) est masqué
     '.fb-att{font-size:10.5px;font-weight:600;white-space:nowrap;flex-shrink:0}body.fb-on #unsavedBadge{display:none!important}' +
+    // Panneau Rappels : vraies cases à cocher (la règle générale des champs les rend invisibles) et libellés normaux
+    '#rp-panel input[type=checkbox]{-webkit-appearance:auto;appearance:auto;width:16px;height:16px;padding:0;margin:0;flex-shrink:0;accent-color:var(--accent)}' +
+    '#rp-panel label{text-transform:none;letter-spacing:0;font-weight:400;color:var(--text)}' +
     // Téléphone : l'état passe sous le nom du fichier (sinon le nom serait coupé à quelques lettres)
     '@media(max-width:768px){.xa-file{flex-wrap:wrap}.fb-att{order:9;flex-basis:100%;padding-left:24px;margin-top:-4px}}' +
     // Téléphone : la page est plus large que l'écran, les boutons du bas de la barre sortaient de l'écran
@@ -11342,6 +11566,7 @@ function injectUI() {
     if (a === 'in') signIn();
     if (a === 'out') signOut();
     if (a === 'now') { Object.keys(KEYS).forEach(k => dirty.add(k)); saveDirty(); schedule(); }
+    if (a === 'rappels') rpGo({ liste: 1 });
     if (a === 'reset' && confirm('Remplacer les données de ce poste par celles de l\'équipe ?\nLes modifications locales pas encore envoyées seront perdues.')) run(() => resetFromRemote(Object.keys(KEYS)));
     pop.classList.remove('on');
   });
@@ -11352,7 +11577,8 @@ function injectUI() {
 document.addEventListener('DOMContentLoaded', start);
 
 // Pour les tests et le dépannage (console)
-window.fbSync = { state: () => state, msg: () => stateMsg, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS };
+window.fbSync = { state: () => state, msg: () => stateMsg, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS,
+  rappels: { items: rpItems, upcoming: rpUpcoming, go: rpGo, fromUrl: rpFromUrl, local: rpLocal } };
 })();
 </script>
 <!-- ═══ VUE TÉLÉPHONE (V3) ═══ -->
