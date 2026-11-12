@@ -172,6 +172,23 @@ const MEASURE = `(() => {
   const inTool = await page.evaluate(() => pmEditingTool === 0);
   await page.evaluate(() => pmCloseTool()); await page.waitForTimeout(200);
   await chk('grille : toucher un nom ouvre l\'outil, « Retour » ramène à la grille', () => page.evaluate(ok => ok && !!document.querySelector('#pm-tools .pmx-wrap') || ok, inTool));
+  const oneLine = sel => page.evaluate(sel => {   // éléments visibles sur une seule ligne, sans dépasser
+    const box = document.querySelector(sel); if (!box) return 'introuvable';
+    const kids = [...box.children].filter(k => getComputedStyle(k).display !== 'none' && k.getBoundingClientRect().width > 0);
+    const mids = kids.map(k => { const r = k.getBoundingClientRect(); return r.top + r.height / 2; });
+    return Math.max(...mids) - Math.min(...mids) <= 4 && box.scrollWidth <= box.clientWidth + 1 || { mids, sw: box.scrollWidth, cw: box.clientWidth };
+  }, sel);
+  await page.evaluate(() => { pmShowTab('identite'); window.scrollTo(0, 0); });
+  await chk('projet ouvert : Sauvegarder · Liste · état · ✕ sur une seule ligne', () => oneLine('#pproj-editor > div:first-child'));
+  await page.evaluate(() => pmShowTab('outils'));
+  await chk('Outils & Suivi : les 4 boutons sur une seule ligne', () => oneLine('.pm-tabpane[data-tab="outils"] .ph > div[style*="display:flex"]'));
+  await page.evaluate(() => { switchApp('engineering'); engEditProject('ep1'); });
+  await page.waitForTimeout(500);
+  await chk('Engineering : aperçu en vraies pages réduites à la largeur de l\'écran (comme un PDF)', () => page.evaluate(() => {
+    const w = document.getElementById('engSpecOutput'), pg = w.querySelector('.eng-page'), pz = parseFloat(w.style.getPropertyValue('--pz'));
+    const cs = getComputedStyle(w), inner = w.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    return pz > 0.3 && pz < 1 && Math.abs(pg.getBoundingClientRect().width - inner) <= 2 && w.scrollWidth <= w.clientWidth + 1 || { pz, page: pg.getBoundingClientRect().width, inner };
+  }));
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

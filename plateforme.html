@@ -11756,6 +11756,7 @@ function decorateHeader() {
   const e = ed(), hd = e && e.firstElementChild; if (!hd) return;
   const lab = [...hd.querySelectorAll('span')].find(s => /^(Édition|Nouveau projet|✓ |● |↻ )/.test(s.textContent.trim()) || s.id === 'pm-autosave');
   if (!lab) return;
+  lab.classList.add('pm-status');   // sur téléphone : prend la place restante, coupé avec « … » (V8)
   if (pmCurProj && pmCurProj.id) { lab.id = 'pm-autosave'; lab.textContent = '✓ Enregistrement automatique'; }
   else lab.textContent = 'Nouveau projet : « Sauvegarder » pour le créer';
 }
@@ -11848,18 +11849,41 @@ css.textContent = `
   .overlay .modal{width:100%!important;max-width:100%!important;border-radius:20px 20px 0 0;max-height:92vh;padding-bottom:${SAFE_B};transform:translateY(30px)}
   .overlay.open .modal{transform:none}
 
-  /* Contenu */
-  .content{padding:12px 12px 16px}
+  /* Contenu : marges latérales réduites, les cartes gardent leurs coins arrondis (V8 ; avant ≈ 35 px de chaque côté) */
+  .content{padding:10px 6px 16px}
+  .pb{padding:14px 10px}
+  .budget-card{padding:14px 12px}
+  .hp-body{padding:14px 8px}
   .fg.s2,.fg.s3{grid-column:1/-1}
   .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px;margin-bottom:14px}
   .stat-card{padding:11px 13px;border-radius:12px}
   .stat-card .sv{font-size:21px;margin:4px 0 2px}
   .stat-card .ss{font-size:10.5px}
   body[data-ach="nouveau"] #main-achats .content > .stats-grid{display:none!important}
-  .ph{flex-wrap:wrap;gap:8px;padding:12px 14px}
+  .ph{flex-wrap:wrap;gap:8px;padding:10px 10px}
   .ph .pt{flex:1 1 auto;min-width:0}
   .ph > div[style*="display:flex"]{flex-wrap:wrap}
-  #pproj-editor > div:first-child{flex-wrap:wrap}
+  /* Projet ouvert : Sauvegarder · Liste · état · ✕ sur une seule ligne (V8) */
+  #pproj-editor > div:first-child{flex-wrap:nowrap;gap:6px}
+  #pproj-editor > div:first-child > .btn{flex-shrink:0;padding:8px 11px}
+  #pproj-editor > div:first-child > span[style*="flex:1"]{display:none}
+  #pproj-editor > div:first-child > .pm-status{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px!important}
+  /* Outils & Suivi : les 4 boutons sur une seule ligne (V8) */
+  .pm-tabpane[data-tab="outils"] .ph > div[style*="display:flex"]{flex-wrap:nowrap;gap:5px;flex:1 1 100%;min-width:0}
+  .pm-tabpane[data-tab="outils"] .ph > div > .btn{flex:1 1 auto;justify-content:center;padding:7px 6px}
+  /* Libellés courts : le texte d'origine (gardé pour les lecteurs d'écran) est masqué, le court s'affiche */
+  #pproj-editor > div:first-child > button[onclick="pmProjTab('list')"],
+  #pproj-editor > div:first-child > button[onclick^="pmDeleteProject"],
+  .pm-tabpane[data-tab="outils"] .ph > div > .btn{font-size:0!important;gap:0}
+  #pproj-editor > div:first-child > button::after,.pm-tabpane[data-tab="outils"] .ph > div > .btn::after{font-size:13px;font-weight:600}
+  .pm-tabpane[data-tab="outils"] .ph > div > .btn::after{font-size:12px}
+  #pproj-editor > div:first-child > button[onclick="pmProjTab('list')"]::after{content:"↺ Liste"}
+  #pproj-editor > div:first-child > button[onclick^="pmDeleteProject"]::after{content:"✕"}
+  #pm-transform-btn::after{content:"⊞ Grille"}
+  .pm-tabpane[data-tab="outils"]:has(.pmx-wrap) #pm-transform-btn::after{content:"▤ Cartes"}
+  .pm-tabpane[data-tab="outils"] button[onclick="pmExportToolsXlsx()"]::after{content:"⬇ Excel"}
+  .pm-tabpane[data-tab="outils"] button[onclick="pmAddPack()"]::after{content:"📦 Pack"}
+  .pm-tabpane[data-tab="outils"] button[onclick="pmAddTool()"]::after{content:"＋ Outil"}
   [style*="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"]{grid-template-columns:minmax(0,1fr)!important}
   .search-bar .search-wrap{flex:1 1 100%;max-width:none}
   .search-bar select{flex:1 1 calc(50% - 5px);width:auto!important}
@@ -11882,18 +11906,18 @@ css.textContent = `
      colonnes groupés par pack (en-tête fixe en haut) — V7 */
   .pmx-wrap{overflow:auto;max-height:calc(100dvh - var(--m-hd) - var(--m-tab) - 24px);border:1px solid var(--border);border-radius:10px;background:var(--surface);overscroll-behavior:contain}
   .pmx{border-collapse:separate;border-spacing:0;min-width:0;width:max-content}   /* pas la largeur mini des tableaux (640 px) : colonnes à leur taille */
-  .pmx th,.pmx td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:0;width:76px;min-width:76px;max-width:76px;height:40px;text-align:center;font:500 11px 'DM Mono',monospace;color:var(--text);background:var(--surface);position:relative;text-transform:none;letter-spacing:0;white-space:normal}
+  .pmx th,.pmx td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:0;width:84px;min-width:84px;max-width:84px;height:40px;text-align:center;font:500 11px 'DM Mono',monospace;color:var(--text);background:var(--surface);position:relative;text-transform:none;letter-spacing:0;white-space:normal}
   .pmx thead th{position:sticky;background:var(--surface2);z-index:2}
-  .pmx thead tr:first-child th{top:0;height:26px}
-  .pmx thead tr:nth-child(2) th{top:26px}
+  .pmx thead tr:first-child th{top:0;height:22px}
+  .pmx thead tr:nth-child(2) th{top:22px}
   .pmx th.pmx-g{text-align:left;padding:0 8px;font:700 11px 'DM Sans',sans-serif;color:var(--accent2);white-space:nowrap;overflow:clip;width:auto;max-width:none}   /* clip (pas hidden) : sinon le nom « collant » se cale sur la case */
-  .pmx th.pmx-g b{display:inline-block;position:sticky;left:104px;font-weight:700}   /* nom du pack visible en défilant */
+  .pmx th.pmx-g b{display:inline-block;position:sticky;left:98px;font-weight:700}   /* nom du pack visible en défilant */
   .pmx th.pmx-g span{color:var(--muted);font-weight:500;margin-left:4px}
-  .pmx th.pmx-t{height:auto;padding:5px 5px 4px;vertical-align:top;border-top:3px solid var(--accent);font:600 10.5px/1.25 'DM Sans',sans-serif;text-align:left}
-  .pmx th.pmx-t > div{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;cursor:pointer}
+  .pmx th.pmx-t{height:auto;padding:4px 5px;vertical-align:top;border-top:3px solid var(--accent);font:600 10px/1.2 'DM Sans',sans-serif;text-align:left}   /* nom de l'outil en entier (jusqu'à 6 lignes, V8) */
+  .pmx th.pmx-t > div{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;cursor:pointer}
   .pmx th.pmx-t.sub{font-weight:500;color:var(--dim)}
   .pmx-x{margin-top:3px;font:600 10px 'DM Sans',sans-serif;color:var(--accent2);background:none;border:1px solid var(--border);border-radius:6px;padding:1px 5px;cursor:pointer}
-  .pmx .pmx-l{position:sticky;left:0;z-index:1;width:96px;min-width:96px;max-width:96px;text-align:left;padding:2px 8px;font:600 11px/1.2 'DM Sans',sans-serif;color:var(--text);background:var(--surface2);word-break:break-word}
+  .pmx .pmx-l{position:sticky;left:0;z-index:1;width:90px;min-width:90px;max-width:90px;text-align:left;padding:2px 8px;font:600 11px/1.2 'DM Sans',sans-serif;color:var(--text);background:var(--surface2);word-break:break-word}
   .pmx thead th.pmx-l{z-index:3;top:0;vertical-align:bottom;padding-bottom:6px;color:var(--muted);font-size:10px;font-weight:600}
   .pmx td{cursor:pointer}
   .pmx td.pmx-none{background:repeating-linear-gradient(45deg,transparent 0 5px,rgba(120,130,150,.10) 5px 10px);cursor:default}
@@ -11901,6 +11925,12 @@ css.textContent = `
   .pmx-leg{display:flex;flex-wrap:wrap;gap:5px 12px;margin-top:8px;font-size:11px;color:var(--muted)}
   .pmx-leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
   .pmx-empty{color:var(--muted);font-size:12px;padding:10px;text-align:center;border:1px dashed var(--border);border-radius:8px}
+  /* Engineering › aperçu de la spécification : de vraies pages (A4, 595 px de « papier », mise en page
+     d'ordinateur) réduites à la largeur de l'écran, comme un PDF. Avant : texte reformaté dans une
+     colonne étroite avec de très grands titres (V8). --pz = facteur de réduction (fitPreview). */
+  .eng-doc-preview{padding:10px 8px}
+  .eng-doc-preview .eng-page{width:595px;max-width:none;padding:0 48px;aspect-ratio:1/1.414;margin:0 auto 12px;zoom:var(--pz,1)}
+  .eng-doc-preview .ec-title{font-size:42px}
 
   /* Nouvel achat : les boutons restent en bas de l'écran */
   body[data-app="achats"][data-ach="nouveau"] #page-nouveau .btn-actions{position:fixed;left:0;right:0;bottom:calc(var(--m-tab) + ${SAFE_B});z-index:120;flex-wrap:nowrap;overflow-x:auto;padding:10px 12px;background:color-mix(in srgb,var(--surface) 92%,transparent);${BLUR};border-top:1px solid var(--border)}
@@ -12062,6 +12092,20 @@ function toolsMatrix() {
     '</tbody></table></div><div class="pmx-leg">' + leg + '</div>';
 }
 
+// ─── ENGINEERING : aperçu de la spécification = pages réduites à la largeur de l'écran (V8) ──
+const PAGE_W = 595;   // largeur « papier » d'une page sur téléphone (A4 en points), réduite ensuite par zoom
+function fitPreview(w) {
+  if (!MQ.matches) { w.style.removeProperty('--pz'); return; }
+  const cs = getComputedStyle(w), avail = w.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  if (avail > 40) w.style.setProperty('--pz', Math.min(1, avail / PAGE_W).toFixed(4));   // aperçu caché : largeur 0, on attend
+}
+function watchPreviews() {
+  const ws = [...document.querySelectorAll('.eng-doc-preview')];
+  if ('ResizeObserver' in window) { const ro = new ResizeObserver(es => es.forEach(e => fitPreview(e.target))); ws.forEach(w => ro.observe(w)); }
+  ws.forEach(fitPreview);
+  MQ.addEventListener('change', () => ws.forEach(fitPreview));
+}
+
 // ─── BRANCHEMENT ───────────────────────────────────────────────────────────
 const wrap = (name, mk) => { const o = window[name]; if (typeof o === 'function') window[name] = mk(o); };
 function init() {
@@ -12103,6 +12147,7 @@ function init() {
   // Page choisie dans le menu ☰ (seule navigation des pages depuis V7) : on repart du haut
   document.querySelectorAll('.sidebar nav').forEach(n => n.addEventListener('click', e => { if (e.target.closest('.nav-item')) setTimeout(toTop, 0); }));
   watchCards();
+  watchPreviews();
   mirrorBadge('home', $('hp-rail-dot'));
   mirrorBadge('achats', $('xa-nc-liv'));
   mirrorSync();
