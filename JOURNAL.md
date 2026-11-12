@@ -5,10 +5,10 @@ Pour travailler sur un sujet, lire sa section et celles listées dans « Liens �
 
 | Sujet | Liens |
 |---|---|
-| 1. Stockage et sauvegarde | 2, 4, 5, 7, 9 |
+| 1. Stockage et sauvegarde | 2, 3, 4, 5, 7, 9 |
 | 2. Achats | 1, 3, 4, 9 |
-| 3. Budget | 2, 7 |
-| 4. Achats+ (workflow, livraisons, fournisseurs) | 1, 2, 9 |
+| 3. Budget | 1, 2, 4, 7 |
+| 4. Achats+ (workflow, livraisons, fournisseurs) | 1, 2, 3, 9 |
 | 5. Engineering | 1, 6, 7 |
 | 6. Export Word | 5 |
 | 7. Project Master | 1, 3, 5, 8 |
@@ -47,6 +47,8 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V4 : une pièce jointe absente de ce poste s'ouvre depuis sa copie en ligne (lien de téléchargement Storage) au lieu de « Fichier introuvable dans ce navigateur ». Raison : le téléchargement automatique vers les autres postes exige le CORS du bucket et peut échouer ; l'ouverture par le lien marche toujours. Remplace le message de la ligne V2 ci-dessus.
 - 2026-11-12, V4 : **un fichier retiré d'un achat garde sa copie dans Storage** (comme en V2) : un autre poste peut encore la référencer. Nettoyage à la main dans la console Firebase si besoin (voir À faire).
 - 2026-11-12, V4 : réglages Firebase à connaître. Les règles Storage doivent autoriser l'écriture aux membres de l'équipe (règles posées en V2) ; sinon : « ⚠ non envoyé » / `storage/unauthorized`. Pour qu'un autre poste garde une copie locale des pièces jointes (et les mette dans sa sauvegarde .zip), le bucket Storage doit avoir le CORS ; sans lui, les fichiers s'ouvrent quand même depuis leur copie en ligne.
+- 2026-11-12, V5 : les documents des budgets partent dans Storage `app/files/<id>` dès l'ajout, comme les pièces jointes d'achat : `pushKey` gère aussi les enregistrements `budgets:<id>` de `suivi_settings` ; `pullFiles` télécharge les fichiers des achats et des budgets, avec un second passage si du nouveau arrive pendant un téléchargement (`allAtts`, vers l. 10944) ; l'état « ☁ en ligne » et l'ouverture depuis la copie en ligne marchent aussi pour le bloc `#b-att-box` (`ATT_BOXES`, vers l. 11003). Raison : les documents de budget (sujet 3) doivent être dans la base comme les pièces jointes d'achat.
+- 2026-11-12, V5 : un fichier de 20 Mo ou plus, ajouté avant la limite, n'est pas envoyé : il affiche « ⚠ trop gros (20 Mo max) » et son enregistrement se synchronise quand même ; le nouvel essai automatique de 30 s ignore ces fichiers. Raison : les règles Storage refusent ≥ 20 Mo, donc cet enregistrement restait bloqué pour toujours (voir ligne V4 « un fichier refusé ne bloque plus que son propre enregistrement »).
 
 ## 2. Achats
 - 2026-11-12, V1 : état de départ. Types CAPEX, OPEX, « Costumer » (orthographe d'origine, à ne pas corriger sans vérifier les données existantes). CAPEX et Costumer exigent un budget et des lignes (immos ou lignes client) (validation l. 2021+). Liste paginée par 15, import/export CSV.
@@ -61,10 +63,14 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 
 ## 3. Budget
 - 2026-11-12, V1 : état de départ. Page Budget Follow Up : cartes, tableau dépliable 2 niveaux (budget → immo → achats), export Excel. Onglet Budget aussi dans la fiche projet de Project Master (l. 8824).
+- 2026-11-12, V5 : **les lignes d'un budget sont identifiées par leur id, plus par leur numéro**. Constaté : budget Costumer CX735 « FILLER NECK BUDGET - 4800021009 », 9 lignes toutes numérotées `T4800021009-000` (le n° de commande client) ; toutes sauf la 1re affichaient un consommé négatif et une barre bleue pleine (−40 217 / 5 976, −673 %). Cause : `getImmoRemaining` (vers l. 2028) retrouvait les lignes par numéro, donc prenait toujours la 1re ; chaque ligne affichait « son montant − reste de la ligne 1 » (5 976 − 46 193 = −40 217) ; un pourcentage négatif donnait une largeur CSS invalide, ignorée par le navigateur, d'où la barre pleine. Correction : les répartitions d'achat stockent `immoId` (id de la ligne) en plus de `immoNum` ; une ancienne répartition sans `immoId` va à la 1re ligne portant son numéro (la ligne que le formulaire d'achat choisissait avant) ; pourcentages bornés entre 0 et 100 ; dans le formulaire d'achat la ligne se choisit par id et la description distingue les lignes de même numéro ; l'arbre de détail, l'export Excel et les achats sous chaque ligne utilisent l'id ; nouvelles fonctions (vers l. 2004-2027) : `lineKey`, `getImmoLine`, `allocLine`, `purchaseLineAmount`, `purchaseOnLine` ; une ancienne ligne sans id en reçoit un à l'ouverture du budget en modification. Raison : un numéro de commande client peut être le même sur toutes les lignes. À dire à l'utilisateur : les anciens achats comptent maintenant sur la 1re ligne ; pour en déplacer un, rouvrir l'achat, choisir la ligne et sauvegarder.
+- 2026-11-12, V5 : documents du budget : section « 📎 Documents du budget » dans le formulaire de budget (balisage vers l. 1280, code vers l. 2541-2605 : `BFILES`, `bAttRender`, `bAttAdd`, `bAttOpen`, `openBudgetFiles`). Affichée pour les budgets CAPEX et Costumer ; masquée pour OPEX (budgets générés par le système) sauf s'il a déjà des fichiers. Fichiers dans IndexedDB `hp_files` comme les pièces jointes d'achat ; description dans `budget.attachments` [{id, name, size, type, at, by}] ; envoi en ligne : voir sujet 1. Bouton « 📎 N » sur la carte du budget : ouvre le budget sur ses documents. Retirer un document : la copie locale est effacée à la sauvegarde du budget, « Annuler » laisse tout en l'état, la copie en ligne reste (comme pour les achats, sujet 1). Raison : demande de l'utilisateur ; un budget CAPEX ou Costumer vient avec un document d'origine (PDF).
 
 ## 4. Achats+ (workflow, livraisons, fournisseurs)
 - 2026-11-12, V1 : état de départ. Module greffé sans modifier l'app Achats (l. 9100-9756) : workflow d'approbation, page Livraisons, page Fournisseurs avec historique de prix, pièces jointes, traçabilité créé/modifié par.
 - 2026-11-12, V4 : **dépendance** : l'affichage de l'état des pièces jointes (couche Firebase, sujet 1) dépend d'Achats+ (`xaRenderBox`, vers l. 9256-9324) : le texte exact de la note « Stockés dans ce navigateur et inclus dans la sauvegarde .zip. » ; les lignes `.xa-file` dans le même ordre que les pièces jointes ; les éléments `[data-xa="open"]` et `.xa-file-s` ; `window.getForm().attachments`. Si Achats+ change l'un de ces points, vérifier l'affichage de l'état des pièces jointes (test_sync section 13). Raison : la couche Firebase est greffée, elle repère ces éléments plutôt que de modifier Achats+.
+- 2026-11-12, V5 : taille maximale d'une pièce jointe d'achat ramenée de 25 Mo à 20 Mo (règles Storage : `request.resource.size < 20 * 1024 * 1024`). Raison : un fichier de 20 à 25 Mo était refusé en ligne et bloquait son achat.
+- 2026-11-12, V5 : la sauvegarde .zip inclut aussi les documents des budgets, dans le même dossier `attachments/<id>__<nom>` (`patchZip`, vers l. 9687). La restauration était déjà générique ; les métadonnées des budgets voyagent dans la partie `#SETTINGS` du CSV. Raison : documents de budget (sujet 3) à sauvegarder comme les pièces jointes.
 
 ## 5. Engineering
 - 2026-11-12, V1 : état de départ. Projets, bibliothèque de solutions (import JSON), réception, entreprises, paramètres, éditeur riche avec images redimensionnables, mode opératoire (bibliothèque d'opérations). Lien vers les projets et produits de Project Master (l. 3897).
@@ -103,6 +109,7 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V3 : **ne jamais casser l'affichage ordinateur en modifiant la vue téléphone** : tout le CSS de la couche est dans `@media (max-width:768px)`. Vérifié : 12 écrans ordinateur (1440 × 900) identiques au pixel près à la V2.
 - 2026-11-12, V4 : téléphone (≤ 768 px) : l'état de chaque pièce jointe passe sur une seconde ligne sous le nom du fichier. Raison : à 320 px le nom était coupé à 3 lettres. Lignes de pièces jointes vérifiées à 320, 390 et 1440 px : rien ne dépasse.
 - 2026-11-12, V3 : à savoir : le planning (Gantt) garde sa colonne de noms de 380 px (l. 9834) ; sur téléphone on fait défiler. Les tableaux Livraisons et Fournisseurs défilent sur le côté (pas en cartes).
+- 2026-11-12, V5 : téléphone, formulaire de budget : chaque ligne affiche numéro + montant + ✕ sur une rangée, la description en pleine largeur dessous ; l'en-tête de colonne « Description » est masqué. CSS vers l. 11452, toujours dans `@media (max-width:768px)`. Raison : à 320 px le numéro et la description étaient coupés (« IMM-00 », « Mo »).
 
 ## 11. Tests et méthode
 - 2026-11-12, V1 : mise en place du journal, du README, de `CLAUDE.md` et de `versions/`. Raison : pouvoir reprendre le projet d'une session à l'autre sans redécouvrir ni défaire les décisions.
@@ -124,6 +131,11 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V4 : `node tests/test_sync.js` : 71 vérifications (53 avant). Nouvelle section 13 « Pièces jointes » : envoi à l'ajout, pour un achat existant et pour un achat neuf non sauvegardé, une seule fois ; Storage qui refuse les envois : les autres achats se synchronisent, l'achat bloqué attend puis part quand Storage revient ; un autre poste ouvre un fichier absent depuis sa copie en ligne ; badge masqué ; texte de la note quand le compte n'est pas autorisé. `tests/mock_firebase.js` a un nouveau drapeau `window.__mockStorageFail = true` qui simule des règles Storage fermées. Les nouvelles vérifications lancées sur `versions/v3.html` échouent comme prévu : elles détectent bien le changement.
 - 2026-11-12, V4 : `node tests/test_mobile.js` : 63/63 sur iPhone 13, iPhone SE et Pixel 7. Affichage ordinateur : 12/12 écrans identiques au pixel près à la V3 (les changements ne touchent que le bloc des pièces jointes et le badge masqué). Lignes de pièces jointes à 320, 390 et 1440 px : rien ne dépasse.
 - 2026-11-12, V4 : `plateforme.html` fait maintenant environ 11 540 lignes. Copie : `versions/v4.html`.
+- 2026-11-12, V5 : nouveau test `node tests/test_budget.js` : 37 vérifications. Lignes de même numéro : montants, barres, arbre, Excel, formulaire d'achat. Documents de budget : ajout, retrait, Annuler, bouton 📎 de la carte, OPEX, limite 20 Mo, sauvegarde .zip et restauration. Il échoue sur `versions/v4.html`, où il reproduit les montants négatifs (−38 917…).
+- 2026-11-12, V5 : `node tests/test_sync.js` : 78 vérifications (71 avant). Nouvelle section 14 : documents de budget entre deux postes, et fichier de plus de 20 Mo.
+- 2026-11-12, V5 : `node tests/test_mobile.js` : 63/63 sur iPhone 13, iPhone SE et Pixel 7.
+- 2026-11-12, V5 : affichage ordinateur identique à la V4, sauf le formulaire de budget (nouvelle section). D'une exécution à l'autre, les écrans Projets peuvent différer de quelques pixels d'anticrénelage (1 unité de couleur sur les coins arrondis) ; la V4 comparée à elle-même montre la même chose : bruit, pas une régression.
+- 2026-11-12, V5 : `plateforme.html` fait maintenant environ 11 660 lignes. Copie : `versions/v5.html`.
 
 ## 12. À faire
 - Question : quels tests faire à chaque version (navigateur, téléphone, données d'exemple) ? → en place en V3 : test_sync, test_mobile sur 3 tailles de téléphone, comparaison de l'affichage ordinateur avec la version précédente.
@@ -144,3 +156,5 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - Prochaine étape proposée : installation comme une app (icône sur l'écran d'accueil, plein écran : manifeste + icônes).
 - Plus tard : planning (Gantt) sur téléphone (colonne des noms de 380 px).
 - Plus tard : Livraisons et Fournisseurs en cartes sur téléphone.
+- En cours (utilisateur) : rouvrir les achats du budget CX735 « FILLER NECK » et choisir la bonne ligne pour chacun (les anciens achats comptent sur la 1re ligne).
+- Prochaine étape (V6, en cours) : rappels des jalons d'outils et actions datées par notification (7 jours avant).

@@ -1276,6 +1276,16 @@ body.light-mode .app-rail-logo{color:#fff}
         </div>
       </div>
 
+      <!-- Documents du budget (CAPEX / Costumer : accord du budget, commande client… en PDF ou autre) -->
+      <div id="bAttSection">
+        <div style="height:1px;background:var(--border);margin:4px 0 12px"></div>
+        <div style="margin-bottom:10px">
+          <div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:700;color:var(--text)">📎 Documents du budget <span id="bAttCount" style="font-family:'DM Mono',monospace;font-weight:400;color:var(--muted)"></span></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">Accord du budget, commande client… (PDF ou autre fichier)</div>
+        </div>
+        <div id="b-att-box" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+
     </div>
     <div class="mf">
       <button class="btn bs" onclick="closeOv('ovBudget')">Annuler</button>
@@ -1658,8 +1668,8 @@ function getForm() {
   if (isMultiImmo) {
     // Filtrer les allocations valides (immo choisie + montant > 0)
     immoAllocations = assetAllocations
-      .filter(a => a.immoNum && Number(a.montant) > 0)
-      .map(a => ({ immoNum: a.immoNum, montant: Number(a.montant) || 0 }));
+      .filter(a => (a.immoId || a.immoNum) && Number(a.montant) > 0)
+      .map(a => { const o = { immoNum: a.immoNum || '', montant: Number(a.montant) || 0 }; if (a.immoId) o.immoId = a.immoId; return o; });
     numAsset = immoAllocations.map(a => a.immoNum).join(', '); // affichage liste
   } else {
     numAsset = v('f-asset'); // champ texte ou select simple
@@ -1721,7 +1731,8 @@ function fillForm(d) {
       const list = document.getElementById('immoAllocList');
       list.innerHTML = ''; // vider la ligne par défaut
       assetAllocations = [];
-      d.immoAllocations.forEach(a => addAssetImmo(a.immoNum));
+      const bud = S.budgets.find(b => b.id === document.getElementById('f-capex')?.value);
+      d.immoAllocations.forEach(a => { const l = allocLine(bud, a); addAssetImmo(l ? lineKey(l) : a.immoNum); });
       recalcAllocations();
     }
   }
@@ -1878,23 +1889,25 @@ function onCapexBudgetChange() {
 }
 
 // Construit le menu déroulant d'une ligne (immo ou ligne client) avec montant restant
-function buildImmoOptions(budgetId, selectedNum) {
+// (valeur = id de la ligne : deux lignes peuvent avoir le même numéro)
+function buildImmoOptions(budgetId, selectedKey) {
   const budget = S.budgets.find(b => b.id === budgetId);
   const lignes = budget?.immobilisations || [];
   const isCapex = (document.getElementById('f-type')?.value || 'CAPEX') === 'CAPEX';
   const nl = isCapex ? 'une immo' : 'une ligne';
+  const selLine = selectedKey ? getImmoLine(budget, selectedKey) : null;
   return `<option value="">— Sélectionner ${nl} —</option>` +
     lignes.map(i => {
-      const rem = getImmoRemaining(budgetId, i.numero);
+      const rem = getImmoRemaining(budgetId, i);
       const lowFlag = rem <= 0 ? ' 🔴' : '';
-      return `<option value="${esc(i.numero)}" ${i.numero===selectedNum?'selected':''}>
+      return `<option value="${esc(lineKey(i))}" ${i===selLine?'selected':''}>
         ${esc(i.numero)} · ${esc(i.description)} · reste ${rem.toLocaleString('fr-FR')} ${budget.devise}${lowFlag}
       </option>`;
     }).join('');
 }
 
-// Ajoute une ligne de sélection d'immo
-function addAssetImmo(selectedNum) {
+// Ajoute une ligne de sélection d'immo (selectedKey : id de la ligne, ou numéro pour les anciens achats)
+function addAssetImmo(selectedKey) {
   const capexEl  = document.getElementById('f-capex');
   const budgetId = capexEl?.value;
   if (!budgetId) return;
@@ -1907,7 +1920,7 @@ function addAssetImmo(selectedNum) {
   div.style.cssText = 'display:flex;gap:6px;align-items:center';
   div.innerHTML = `
     <select onchange="recalcAllocations()" data-immo style="flex:1">
-      ${buildImmoOptions(budgetId, selectedNum)}
+      ${buildImmoOptions(budgetId, selectedKey)}
     </select>
     <span data-portion style="font-family:'DM Mono',monospace;font-size:11px;color:var(--accent3);min-width:90px;text-align:right">—</span>
     <button onclick="removeAssetImmo('${rowId}')" style="background:rgba(255,77,106,.1);border:1px solid rgba(255,77,106,.2);color:var(--danger);border-radius:7px;width:30px;height:32px;cursor:pointer;flex-shrink:0">×</button>`;
@@ -1939,23 +1952,26 @@ function recalcAllocations() {
 
   // Suivi du disponible par immo DANS ce formulaire (évite le double-comptage
   // si la même immo est choisie 2 fois, et exclut l'achat en cours d'édition)
-  const localAvail = {}; // immoNum → argent encore dispo pour CE formulaire
+  const localAvail = {}; // ligne (id) → argent encore dispo pour CE formulaire
 
   rows.forEach(sel => {
     const portionEl = sel.parentElement.querySelector('[data-portion]');
-    const immoNum   = sel.value;
-    if (!immoNum) { portionEl.textContent = '—'; portionEl.style.color = 'var(--muted)'; return; }
+    const key       = sel.value;
+    if (!key) { portionEl.textContent = '—'; portionEl.style.color = 'var(--muted)'; return; }
+    const line      = getImmoLine(budget, key);
 
     // Initialiser le dispo de cette immo (exclut l'achat édité pour ne pas se compter soi-même)
-    if (localAvail[immoNum] === undefined) {
-      localAvail[immoNum] = getImmoRemaining(budgetId, immoNum, editingId);
+    if (localAvail[key] === undefined) {
+      localAvail[key] = getImmoRemaining(budgetId, line || key, editingId);
     }
-    const dispo = localAvail[immoNum];
+    const dispo = localAvail[key];
 
     // Montant qu'on prend = min(reste à couvrir, dispo restant sur cette immo)
     const take = Math.max(0, Math.min(remaining, dispo));
-    localAvail[immoNum] -= take; // décrémenter pour les lignes suivantes
-    assetAllocations.push({ immoNum, montant: take });
+    localAvail[key] -= take; // décrémenter pour les lignes suivantes
+    const alloc = { immoNum: line ? (line.numero || '') : key, montant: take };
+    if (line && line.id) alloc.immoId = line.id;   // la ligne exacte, même si son numéro se répète
+    assetAllocations.push(alloc);
     covered   += take;
     remaining -= take;
 
@@ -1982,10 +1998,36 @@ function recalcAllocations() {
   }
 }
 
-// Argent restant sur une immo = montant immo - somme des achats liés à cette immo
-function getImmoRemaining(budgetId, immoNum, excludeId) {
+// Lignes d'un budget (immos / lignes client) : une ligne se reconnaît à son id, car le numéro peut se
+// répéter (ex. le même n° de commande client sur toutes les lignes). Les anciennes répartitions, sans
+// immoId, vont à la première ligne qui porte leur numéro (c'est celle que le formulaire d'achat retenait).
+function lineKey(i) { return i.id || i.numero || ''; }
+function getImmoLine(budget, ref) {   // ref : la ligne elle-même, son id, ou un numéro (anciens appels)
+  const lines = budget?.immobilisations || [];
+  if (ref && typeof ref === 'object') return lines.includes(ref) ? ref : null;
+  return lines.find(i => i.id && i.id === ref) || lines.find(i => i.numero === ref) || null;
+}
+function allocLine(budget, a) {       // ligne visée par une répartition {immoId?, immoNum, montant}
+  const lines = budget?.immobilisations || [];
+  if (a && a.immoId) return lines.find(i => i.id === a.immoId) || null;
+  return lines.find(i => i.numero === (a && a.immoNum)) || null;
+}
+// Part d'un achat sur une ligne précise (0 si l'achat n'y est pas rattaché)
+function purchaseLineAmount(p, budget, line) {
+  if (Array.isArray(p.immoAllocations))
+    return p.immoAllocations.reduce((s, a) => s + (allocLine(budget, a) === line ? (Number(a.montant) || 0) : 0), 0);
+  const lines = budget?.immobilisations || [];   // ancien achat : n° saisi à la main
+  return p.numAsset && lines.find(i => i.numero === p.numAsset) === line ? (Number(p.puHT)||0) * (Number(p.quantite)||1) : 0;
+}
+function purchaseOnLine(p, budget, line) {
+  if (Array.isArray(p.immoAllocations)) return p.immoAllocations.some(a => allocLine(budget, a) === line);
+  const lines = budget?.immobilisations || [];
+  return !!p.numAsset && lines.find(i => i.numero === p.numAsset) === line;
+}
+// Argent restant sur une ligne = montant de la ligne - achats rattachés à CETTE ligne (hors annulés)
+function getImmoRemaining(budgetId, ref, excludeId) {
   const budget = S.budgets.find(b => b.id === budgetId);
-  const immo   = budget?.immobilisations?.find(i => i.numero === immoNum);
+  const immo   = getImmoLine(budget, ref);
   if (!immo) return 0;
   const immoMontant = Number(immo.montant) || 0;
   let used = 0;
@@ -1993,13 +2035,7 @@ function getImmoRemaining(budgetId, immoNum, excludeId) {
     if (excludeId && p.id === excludeId) return; // ignorer l'achat en cours d'édition
     if (p.recMIGO === 'CANCELLED') return; // achat annulé → ne compte pas
     if (p._budgetId !== budgetId) return;
-    // Achat lié à cette immo (via allocations ou champ simple)
-    if (Array.isArray(p.immoAllocations)) {
-      const a = p.immoAllocations.find(x => x.immoNum === immoNum);
-      if (a) used += Number(a.montant) || 0;
-    } else if (p.numAsset === immoNum) {
-      used += (Number(p.puHT)||0) * (Number(p.quantite)||1);
-    }
+    used += purchaseLineAmount(p, budget, immo);
   });
   return immoMontant - used;
 }
@@ -2063,7 +2099,7 @@ function validateForm() {
       // 2) Si le budget a des lignes : vérifier couverture
       if ((budget?.immobilisations || []).length > 0 && document.getElementById('immoAllocList')) {
         const covered    = assetAllocations.reduce((s,a) => s + (Number(a.montant)||0), 0);
-        const validLines = assetAllocations.filter(a => a.immoNum && Number(a.montant) > 0);
+        const validLines = assetAllocations.filter(a => (a.immoId || a.immoNum) && Number(a.montant) > 0);
         if (validLines.length === 0) {
           err('fg-asset', `N° ${NL}`);
         } else if (totalHT - covered > 0.01) {
@@ -2297,6 +2333,7 @@ function renderStats() {
 // ═══════════════════════════════════════════════════════════
 let immoList = []; // liste temporaire pendant la saisie
 let editingBudgetId = null; // ID du budget en cours de modification
+let budgetAtts = [], budgetAttsRemoved = []; // documents du budget en cours de saisie / retirés (effacés du poste à l'enregistrement)
 
 function openAddBudget() {
   editingBudgetId = null;
@@ -2308,6 +2345,7 @@ function openAddBudget() {
   document.getElementById('bType').value    = 'CAPEX';
   document.getElementById('immoRows').innerHTML = '';
   document.getElementById('immoEmpty').style.display = 'block';
+  budgetAtts = []; budgetAttsRemoved = []; bAttRender();
   onBudgetTypeChange(); // affiche la section + libellés selon le type
   // Titre modal
   document.querySelector('#ovBudget .mh span').textContent = 'Nouveau Budget';
@@ -2330,6 +2368,7 @@ function openEditBudget(id) {
   document.getElementById('bDevise').value  = b.devise || 'EUR';
 
   const type = b.type || 'CAPEX';
+  budgetAtts = (b.attachments || []).map(a => ({ ...a })); budgetAttsRemoved = []; bAttRender();
   // Afficher/cacher + libellés via la fonction dédiée
   onBudgetTypeChange();
 
@@ -2338,9 +2377,10 @@ function openEditBudget(id) {
   const hasLines = (type === 'CAPEX' || type === 'Costumer') && b.immobilisations?.length > 0;
   if (hasLines) {
     document.getElementById('immoEmpty').style.display = 'none';
-    b.immobilisations.forEach(i => {
-      immoList.push({ id: i.id, numero: i.numero, description: i.description, montant: i.montant });
-      addImmoRow({ id: i.id, numero: i.numero, description: i.description, montant: i.montant });
+    b.immobilisations.forEach((i, n) => {
+      const id = i.id || ('I' + Date.now() + '_' + n);   // ancienne ligne sans id : elle en reçoit un
+      immoList.push({ id, numero: i.numero, description: i.description, montant: i.montant });
+      addImmoRow({ id, numero: i.numero, description: i.description, montant: i.montant });
     });
   } else {
     document.getElementById('immoEmpty').style.display = 'block';
@@ -2360,6 +2400,7 @@ function onBudgetTypeChange() {
   const show = (type === 'CAPEX' || type === 'Costumer');
   document.getElementById('immoSection').style.display = show ? 'block' : 'none';
   setImmoSectionLabels(type);
+  bAttShow();
 }
 
 // Ajuste les libellés de la section selon le type (immo vs ligne client)
@@ -2468,6 +2509,7 @@ function confirmBudget() {
         montant    : parseFloat(i.montant) || 0
       }));
   }
+  budgetData.attachments = budgetAtts.map(a => ({ ...a }));   // documents du budget (fichiers dans hp_files)
 
   if (editingBudgetId) {
     // ── Modifier le budget existant ─────────────────────────
@@ -2486,9 +2528,80 @@ function confirmBudget() {
 
   editingBudgetId = null;
   saveSettings();
+  budgetAttsRemoved.forEach(a => BFILES.del(a.id).catch(() => {}));   // documents retirés : copie locale effacée
+  budgetAttsRemoved = [];
   closeOv('ovBudget');
   renderBudget();
   renderParams();
+}
+
+// ─── Documents du budget (CAPEX / Costumer) ─────────────────────────────────
+// Même stockage que les pièces jointes des achats : fichier dans IndexedDB hp_files (clé = id),
+// description dans budget.attachments [{id, name, size, type, at, by}]. Envoi en ligne : couche Firebase.
+const BFILES = (() => {
+  let dbp;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('hp_files', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const op = (mode, fn) => open().then(d => new Promise((res, rej) => {
+    const tx = d.transaction('files', mode), q = fn(tx.objectStore('files'));
+    tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error);
+  }));
+  return { put: (id, v) => op('readwrite', s => s.put(v, id)), get: id => op('readonly', s => s.get(id)), del: id => op('readwrite', s => s.delete(id)) };
+})();
+const bAttSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' Mo' : Math.max(1, Math.round(n / 1024)) + ' ko';
+function budgetFormAtts() { return budgetAtts; }   // lu par la couche Firebase (état « en ligne » de chaque fichier)
+function bAttShow() {   // visible pour CAPEX / Costumer (l'OPEX vient du système), ou dès qu'il y a des fichiers
+  const t = document.getElementById('bType')?.value, sec = document.getElementById('bAttSection');
+  if (sec) sec.style.display = (t === 'CAPEX' || t === 'Costumer' || budgetAtts.length) ? 'block' : 'none';
+}
+function bAttRender() {
+  const box = document.getElementById('b-att-box'); if (!box) return;
+  if (!box.dataset.wired) {
+    box.dataset.wired = '1';
+    box.addEventListener('click', e => {
+      const b = e.target.closest('[data-ba]'); if (!b) return;
+      const i = +b.dataset.i, a = budgetAtts[i]; if (!a) return;
+      if (b.dataset.ba === 'open') bAttOpen(a);
+      else if (b.dataset.ba === 'rm' && confirm('Retirer « ' + a.name + ' » ?')) { budgetAtts.splice(i, 1); budgetAttsRemoved.push(a); bAttRender(); }
+    });
+    box.addEventListener('change', e => { if (e.target.dataset.baUp) bAttAdd(e.target); });
+  }
+  const cnt = document.getElementById('bAttCount'); if (cnt) cnt.textContent = budgetAtts.length || '';
+  box.innerHTML = budgetAtts.map((a, i) =>
+      '<div class="xa-file"><span>📄</span><span class="xa-file-n" data-ba="open" data-i="' + i + '" title="' + esc(a.name) + '">' + esc(a.name) + '</span>' +
+      '<span class="xa-file-s">' + bAttSize(a.size || 0) + '</span><button class="xa-x" data-ba="rm" data-i="' + i + '" title="Retirer">✕</button></div>').join('') +
+    '<label class="btn bs btn-sm xa-up">＋ Ajouter des fichiers<input type="file" multiple data-ba-up="1"></label>' +
+    '<div class="xa-note" style="font-size:10px">Stockés dans ce navigateur et inclus dans la sauvegarde .zip.</div>';
+  bAttShow();
+}
+async function bAttAdd(input) {
+  const files = [...input.files]; input.value = '';
+  let n = 0;
+  for (const f of files) {
+    if (f.size >= 20 * 1048576) { toast('⚠️', f.name + ' : 20 Mo maximum', 'var(--warn)'); continue; }   // limite des règles Storage
+    const id = 'F' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    try { await BFILES.put(id, { blob: f, name: f.name, type: f.type }); }
+    catch (e) { toast('✕', 'Stockage impossible : ' + e.message, 'var(--danger)'); continue; }
+    budgetAtts.push({ id, name: f.name, size: f.size, type: f.type, at: new Date().toISOString(), by: localStorage.getItem('hp_user') || '' });
+    n++;
+  }
+  bAttRender();
+  if (n) toast('📎', n + ' fichier(s) joint(s) — enregistrez le budget pour les garder');
+}
+async function bAttOpen(a) {
+  const rec = await BFILES.get(a.id).catch(() => null);
+  if (!rec || !rec.blob) { toast('✕', 'Fichier introuvable dans ce navigateur', 'var(--danger)'); return; }
+  const url = URL.createObjectURL(rec.blob);
+  const w = window.open(url, '_blank');
+  if (!w) { const l = document.createElement('a'); l.href = url; l.download = a.name; l.click(); }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+function openBudgetFiles(id) {   // 📎 de la carte budget : ouvre le budget sur ses documents
+  openEditBudget(id);
+  setTimeout(() => document.getElementById('bAttSection')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60);
 }
 function delBudget(id) {
   const nLinked = purchases.filter(p => p._budgetId === id).length;
@@ -2533,24 +2646,16 @@ async function exportBudgetExcel() {
     if (hasLines) {
       immos.forEach(i => {
         const m = Number(i.montant)||0;
-        const r = getImmoRemaining(b.id, i.numero);
+        const r = getImmoRemaining(b.id, i);
         const u = m - r;
         // Achats liés à cette immo/ligne
-        const linked = purchases.filter(p =>
-          p._budgetId === b.id && (
-            (Array.isArray(p.immoAllocations) && p.immoAllocations.some(a => a.immoNum === i.numero)) ||
-            p.numAsset === i.numero
-          ));
+        const linked = purchases.filter(p => p._budgetId === b.id && purchaseOnLine(p, b, i));
         // Niveau 2 : immo / ligne client
         const lineType = type === 'CAPEX' ? 'Immo' : 'Ligne';
         rows.push(['  '+lineType, b.projet, type, i.numero||'', i.description||'', linked.length, Math.round(u), m, Math.round(r), '', '', '', '', b.devise]);
         // Niveau 3 : achats liés
         linked.forEach(p => {
-          let montant = (Number(p.puHT)||0)*(Number(p.quantite)||1);
-          if (Array.isArray(p.immoAllocations)) {
-            const a = p.immoAllocations.find(x => x.immoNum === i.numero);
-            if (a) montant = Number(a.montant)||0;
-          }
+          const montant = purchaseLineAmount(p, b, i);   // part de l'achat sur cette ligne
           rows.push(['    Achat', b.projet, type, p.reference||'', p.description||'', '', Math.round(montant), '', '', p.fournisseur||'', p.numDA||'', p.numPO||'', p.recMIGO||'', b.devise]);
         });
       });
@@ -2615,9 +2720,9 @@ function renderBudget() {
             </div>
             ${immos.map(i => {
               const immoMontant = Number(i.montant) || 0;
-              const immoRem  = getImmoRemaining(b.id, i.numero);
+              const immoRem  = getImmoRemaining(b.id, i);
               const immoUsed = immoMontant - immoRem;
-              const immoPct  = immoMontant > 0 ? Math.min(Math.round((immoUsed/immoMontant)*100),100) : 0;
+              const immoPct  = immoMontant > 0 ? Math.max(0, Math.min(Math.round((immoUsed/immoMontant)*100),100)) : 0;
               const ipf = immoPct >= 100 ? 'pf-over' : immoPct >= 80 ? 'pf-warn' : 'pf-ok';
               return `<div style="margin-bottom:9px">
                 <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
@@ -2648,6 +2753,7 @@ function renderBudget() {
             <div class="bc-label">${esc(b.label)}</div>
           </div>
           <div style="display:flex;gap:5px">
+            ${(b.attachments || []).length ? `<button class="btn bs btn-sm" onclick="openBudgetFiles('${b.id}')" title="${esc(b.attachments.map(a => a.name).join(' · '))}">📎 ${b.attachments.length}</button>` : ''}
             <button class="btn bb btn-sm" onclick="openEditBudget('${b.id}')" title="Modifier">✎</button>
             <button class="btn bd btn-sm" onclick="delBudget('${b.id}')" title="Supprimer">✕</button>
           </div>
@@ -2710,19 +2816,16 @@ function renderBudget() {
       // Afficher chaque immo / ligne client
       childRows = immos.map(i => {
         const m   = Number(i.montant)||0;
-        const r   = getImmoRemaining(b.id, i.numero);
+        const r   = getImmoRemaining(b.id, i);
         const u   = m - r;
-        const pct = m > 0 ? Math.min(Math.round(u/m*100),100) : 0;
+        const pct = m > 0 ? Math.max(0, Math.min(Math.round(u/m*100),100)) : 0;
         const pc  = u > m ? 'var(--danger)' : 'var(--accent3)';
         // Achats liés à cette immo précise
-        const linkedP = purchases.filter(p =>
-          p._budgetId === b.id && (
-            (Array.isArray(p.immoAllocations) && p.immoAllocations.some(a => a.immoNum === i.numero)) ||
-            p.numAsset === i.numero
-          ));
-        return `<tr class="immo-row child-${b.id}" style="display:none;background:rgba(0,132,255,.03);border-bottom:1px solid rgba(42,48,64,.25);cursor:pointer" onclick="toggleImmoRow('${b.id}','${esc(i.numero)}',event)">
+        const linkedP = purchases.filter(p => p._budgetId === b.id && purchaseOnLine(p, b, i));
+        const key = lineKey(i);   // id de la ligne (le numéro peut se répéter)
+        return `<tr class="immo-row child-${b.id}" style="display:none;background:rgba(0,132,255,.03);border-bottom:1px solid rgba(42,48,64,.25);cursor:pointer" onclick="toggleImmoRow('${b.id}','${esc(key)}',event)">
           <td colspan="3" style="padding:7px 13px 7px 32px;color:var(--accent2);font-size:11px">
-            <span id="iarrow-${b.id}-${cssId(i.numero)}" style="display:inline-block;width:12px;color:var(--muted)">▶</span>
+            <span id="iarrow-${b.id}-${cssId(key)}" style="display:inline-block;width:12px;color:var(--muted)">▶</span>
             <span style="font-family:'DM Mono',monospace">${esc(i.numero||'—')}</span>
             <span style="color:var(--dim);margin-left:6px">${esc(i.description||'')}</span>
           </td>
@@ -2762,16 +2865,13 @@ function renderBudget() {
 }
 
 // Génère une ligne d'achat (niveau 2) pour l'arbre détail
-function purchaseDetailRow(p, budget, indent, immoNum) {
+function purchaseDetailRow(p, budget, indent, line) {
   const tdR = 'padding:6px 13px;text-align:right;font-family:\'DM Mono\',monospace;font-size:11px';
   const isCancelled = p.recMIGO === 'CANCELLED';
-  // Montant alloué à cette immo précise (si multi-immo) sinon total
+  // Montant alloué à cette ligne précise (si multi-lignes) sinon total
   let montant = (Number(p.puHT)||0) * (Number(p.quantite)||1);
-  if (immoNum && Array.isArray(p.immoAllocations)) {
-    const a = p.immoAllocations.find(x => x.immoNum === immoNum);
-    if (a) montant = Number(a.montant)||0;
-  }
-  const cls = immoNum ? `pur-${budget.id}-${cssId(immoNum)}` : `child-${budget.id}`;
+  if (line && Array.isArray(p.immoAllocations)) montant = purchaseLineAmount(p, budget, line);
+  const cls = line ? `pur-${budget.id}-${cssId(lineKey(line))}` : `child-${budget.id}`;
   const strike = isCancelled ? 'text-decoration:line-through;opacity:.55' : '';
   return `<tr class="${cls}" style="display:none;background:rgba(0,200,160,.03);border-bottom:1px solid rgba(42,48,64,.2);${isCancelled?'opacity:.6':''}">
     <td colspan="3" style="padding:6px 13px 6px ${indent+18}px;color:var(--dim);font-size:11px;${strike}">
@@ -2804,24 +2904,21 @@ function toggleBudgetRow(budgetId) {
   }
 }
 
-// Déplier/replier une immo → montre les achats liés
-function toggleImmoRow(budgetId, immoNum, event) {
+// Déplier/replier une immo → montre les achats liés (key : id de la ligne)
+function toggleImmoRow(budgetId, key, event) {
   if (event) event.stopPropagation();
   const budget = S.budgets.find(b => b.id === budgetId);
-  const arrow = document.getElementById('iarrow-' + budgetId + '-' + cssId(immoNum));
-  const cls = 'pur-' + budgetId + '-' + cssId(immoNum);
+  const line = getImmoLine(budget, key);
+  const arrow = document.getElementById('iarrow-' + budgetId + '-' + cssId(key));
+  const cls = 'pur-' + budgetId + '-' + cssId(key);
   let rows = document.querySelectorAll('.' + cls);
 
   // Injecter les lignes d'achat si pas encore créées
   if (rows.length === 0) {
     const immoTr = arrow.closest('tr');
-    const linked = purchases.filter(p =>
-      p._budgetId === budgetId && (
-        (Array.isArray(p.immoAllocations) && p.immoAllocations.some(a => a.immoNum === immoNum)) ||
-        p.numAsset === immoNum
-      ));
+    const linked = line ? purchases.filter(p => p._budgetId === budgetId && purchaseOnLine(p, budget, line)) : [];
     const html = linked.length
-      ? linked.map(p => purchaseDetailRow(p, budget, 44, immoNum)).join('')
+      ? linked.map(p => purchaseDetailRow(p, budget, 44, line)).join('')
       : `<tr class="${cls}" style="display:none;background:rgba(0,0,0,.12)"><td colspan="8" style="padding:6px 13px 6px 62px;color:var(--muted);font-size:11px">Aucun achat lié à cette ligne</td></tr>`;
     immoTr.insertAdjacentHTML('afterend', html);
     rows = document.querySelectorAll('.' + cls);
@@ -9350,7 +9447,7 @@ function xaRenderPrice() {
 async function xaAddFiles(input) {
   const files = [...input.files]; input.value = '';
   for (const f of files) {
-    if (f.size > 25 * 1048576) { toast('⚠️', f.name + ' : 25 Mo maximum', 'var(--warn)'); continue; }
+    if (f.size >= 20 * 1048576) { toast('⚠️', f.name + ' : 20 Mo maximum', 'var(--warn)'); continue; }   // limite des règles Storage (envoi en ligne)
     const id = 'F' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     try { await fPut(id, { blob: f, name: f.name, type: f.type }); }
     catch (e) { toast('✕', 'Stockage impossible : ' + e.message, 'var(--danger)'); continue; }
@@ -9595,7 +9692,8 @@ function patchZip() {
     P().forEach(p => { const x = pick(p); if (Object.keys(x).length) extras[p.id] = { line: p.line, ...x }; });
     zip.file('purchasing_extras.json', JSON.stringify({ version: 1, extras, suppliers: SUP() }, null, 2));
     const folder = zip.folder('attachments');
-    for (const p of P()) for (const a of (p.attachments || [])) {
+    const budgets = (typeof S !== 'undefined' && S && S.budgets) || [];   // + documents des budgets (V5)
+    for (const o of [...P(), ...budgets]) for (const a of (o.attachments || [])) {
       try { const r = await fGet(a.id); if (r) folder.file(a.id + '__' + a.name.replace(/[\\/:*?"<>|]/g, '_'), r.blob); } catch (e) { }
     }
     return zip.generateAsync({ type: 'blob' });
@@ -10748,7 +10846,7 @@ async function pushKey(k) {
         await st.ref('app/img/' + hh).putString(d, 'data_url');
         up['i:' + hh] = 1; saveUp(); cachePut(hh, d);
       }
-      if (k === 'suivi_autosave') {
+      if (k === 'suivi_autosave' || (k === 'suivi_settings' && id.startsWith('budgets:'))) {   // achats, et documents des budgets (V5)
         let rec = null; try { rec = JSON.parse(loc[id].j); } catch (e) {}
         for (const a of (rec && rec.attachments) || []) if (a && a.id && !up['f:' + a.id]) await uploadFile(a.id, a);
       }
@@ -10837,31 +10935,43 @@ async function reconcile(k, ids, tries) {
   if (applied) {
     setLocal(k, v);
     received.add(k); refreshSoon();
-    if (k === 'suivi_autosave') pullFiles();
+    if (k === 'suivi_autosave' || k === 'suivi_settings') pullFiles();
   }
   if (dirty.has(k)) schedule();
 }
 
-// Pièces jointes reçues d'un autre poste → copie locale (hp_files)
-let pulling = false;
+// Pièces jointes reçues d'un autre poste (achats et documents des budgets) → copie locale (hp_files)
+function allAtts() {
+  const out = [];
+  for (const p of (parseLocal('suivi_autosave') || [])) out.push(...((p && p.attachments) || []));
+  for (const b of ((parseLocal('suivi_settings') || {}).budgets || [])) out.push(...((b && b.attachments) || []));
+  return out;
+}
+let pulling = false, pullAgain = false;
 async function pullFiles() {
-  if (pulling || !st) return; pulling = true;
+  if (!st) return;
+  if (pulling) { pullAgain = true; return; }   // déjà en cours : on repassera à la fin
+  pulling = true;
   try {
-    for (const p of (parseLocal('suivi_autosave') || [])) for (const a of (p && p.attachments) || []) {
-      if (!a || !a.id) continue;
-      const have = await fileGet(a.id); if (have) continue;
-      try {
-        const url = await st.ref('app/files/' + a.id).getDownloadURL();
-        const blob = await (await fetch(url)).blob();
-        await filePut(a.id, { blob, name: a.name, type: a.type || blob.type }); up['f:' + a.id] = 1; localHave.set(a.id, true);
-      } catch (e) { /* réessayé plus tard */ }
-    }
-    saveUp();
+    do {
+      pullAgain = false;
+      for (const a of allAtts()) {
+        if (!a || !a.id) continue;
+        const have = await fileGet(a.id); if (have) continue;
+        try {
+          const url = await st.ref('app/files/' + a.id).getDownloadURL();
+          const blob = await (await fetch(url)).blob();
+          await filePut(a.id, { blob, name: a.name, type: a.type || blob.type }); up['f:' + a.id] = 1; localHave.set(a.id, true);
+        } catch (e) { /* réessayé plus tard */ }
+      }
+      saveUp();
+    } while (pullAgain);
   } finally { pulling = false; }
 }
 
 // ─── PIÈCES JOINTES : envoi dès l'ajout, état affiché à côté de chaque fichier ──
 const upBusy = new Map(), upFail = new Map(), localHave = new Map();   // id → envoi en cours / erreur / fichier présent sur ce poste
+const MAX_FILE = 20 * 1048576, TOO_BIG = 'trop gros';   // règles Storage : moins de 20 Mo par fichier
 function uploadFile(id, meta) {
   if (up['f:' + id]) return Promise.resolve();
   if (upBusy.has(id)) return upBusy.get(id);
@@ -10869,6 +10979,7 @@ function uploadFile(id, meta) {
     const f = await fileGet(id);
     localHave.set(id, !!(f && f.blob));
     if (!f || !f.blob || !st) return;                      // fichier d'un autre poste : il est déjà en ligne
+    if (f.blob.size >= MAX_FILE) { upFail.set(id, TOO_BIG); return; }   // refusé de toute façon : l'enregistrement part sans lui
     try {
       await st.ref('app/files/' + id).put(f.blob, { contentType: f.type || (meta && meta.type) || 'application/octet-stream', customMetadata: { name: String(f.name || (meta && meta.name) || '') } });
       up['f:' + id] = 1; saveUp(); upFail.delete(id);
@@ -10888,8 +10999,15 @@ function formAtts() { try { return (window.getForm && window.getForm().attachmen
 let decT = null;
 function decorateSoon() { clearTimeout(decT); decT = setTimeout(() => { decorate().catch(e => console.warn('fb pj', e)); }, 80); }
 const NOTE0 = 'Stockés dans ce navigateur et inclus dans la sauvegarde .zip.';   // texte d'origine (Achats+)
+// Blocs de pièces jointes suivis : formulaire d'achat (Achats+) et documents du budget (V5)
+const ATT_BOXES = [
+  { box: 'xa-box', open: '[data-xa="open"]', atts: formAtts },
+  { box: 'b-att-box', open: '[data-ba="open"]', atts: () => (typeof window.budgetFormAtts === 'function' && window.budgetFormAtts()) || [] }
+];
 async function decorate() {
-  const box = $('xa-box'); if (!box) return;
+  for (const B of ATT_BOXES) { const box = $(B.box); if (box) await decorateBox(box, B.atts()); }
+}
+async function decorateBox(box, atts) {
   const fileMode = state === 'file';   // app ouverte comme fichier : rien en ligne, affichage d'origine
   box.querySelectorAll('.xa-note').forEach(n => {
     if (!n.dataset.fbNote && n.textContent !== NOTE0) return;
@@ -10899,7 +11017,7 @@ async function decorate() {
       : 'Sur ce poste pour l\'instant : ils partiront en ligne une fois connecté (☁). Inclus dans la sauvegarde .zip.';
   });
   if (fileMode) { box.querySelectorAll('.fb-att').forEach(s => s.remove()); return; }
-  const rows = [...box.querySelectorAll('.xa-file')], atts = formAtts();
+  const rows = [...box.querySelectorAll('.xa-file')];
   for (let i = 0; i < rows.length; i++) {
     const a = atts[i]; if (!a || !a.id) continue;
     const f = await fileGet(a.id), local = !!(f && f.blob);   // relu à chaque fois : le clic « ouvrir » s'appuie dessus
@@ -10909,6 +11027,7 @@ async function decorate() {
     if (up['f:' + a.id] || (!local && ready)) { txt = '☁ en ligne'; col = 'var(--accent)'; tip = 'Enregistré en ligne : l\'équipe peut l\'ouvrir'; }
     else if (!local) { txt = 'absent de ce poste'; col = 'var(--muted)'; tip = 'Connectez-vous avec ☁ pour l\'ouvrir depuis sa copie en ligne'; }
     else if (upBusy.has(a.id)) { txt = '⏳ envoi…'; col = 'var(--accent2)'; }
+    else if (upFail.get(a.id) === TOO_BIG) { txt = '⚠ trop gros (20 Mo max)'; col = 'var(--danger)'; tip = 'Plus de 20 Mo : reste sur ce poste (et dans la sauvegarde .zip), pas en ligne'; }
     else if (upFail.has(a.id)) { txt = '⚠ non envoyé'; col = 'var(--danger)'; tip = 'Erreur : ' + upFail.get(a.id) + ' — nouvel essai automatique'; }
     else { txt = 'sur ce poste'; col = 'var(--warn)'; tip = 'Connectez-vous avec ☁ pour l\'envoyer en ligne'; }
     const row = rows[i];
@@ -10917,20 +11036,22 @@ async function decorate() {
     s.textContent = txt; s.style.color = col; s.title = tip;
   }
 }
-// Formulaire d'achat : suivre les pièces jointes ; ouvrir depuis Storage un fichier absent de ce poste
+// Formulaires (achat, budget) : suivre les pièces jointes ; ouvrir depuis Storage un fichier absent de ce poste
 function wireAttachments() {
-  const box = $('xa-box'); if (!box) return;
-  new MutationObserver(decorateSoon).observe(box, { childList: true });   // Achats+ redessine le bloc à chaque changement
-  box.addEventListener('click', e => {
-    const b = e.target.closest('[data-xa="open"]'); if (!b || !st || !ready) return;
-    const a = formAtts()[+b.dataset.i];
-    if (!a || !a.id || localHave.get(a.id) !== false) return;   // fichier présent sur ce poste : ouverture habituelle
-    e.preventDefault(); e.stopPropagation();
-    const w = window.open('', '_blank');                          // ouvert tout de suite (sinon bloqué comme fenêtre surgissante)
-    st.ref('app/files/' + a.id).getDownloadURL()
-      .then(u => { if (w) w.location.href = u; else window.location.href = u; })
-      .catch(() => { if (w) w.close(); if (typeof toast === 'function') toast('✕', 'Fichier introuvable en ligne', 'var(--danger)'); });
-  }, true);
+  ATT_BOXES.forEach(B => {
+    const box = $(B.box); if (!box) return;
+    new MutationObserver(decorateSoon).observe(box, { childList: true });   // le bloc est redessiné à chaque changement
+    box.addEventListener('click', e => {
+      const b = e.target.closest(B.open); if (!b || !st || !ready) return;
+      const a = B.atts()[+b.dataset.i];
+      if (!a || !a.id || localHave.get(a.id) !== false) return;   // fichier présent sur ce poste : ouverture habituelle
+      e.preventDefault(); e.stopPropagation();
+      const w = window.open('', '_blank');                          // ouvert tout de suite (sinon bloqué comme fenêtre surgissante)
+      st.ref('app/files/' + a.id).getDownloadURL()
+        .then(u => { if (w) w.location.href = u; else window.location.href = u; })
+        .catch(() => { if (w) w.close(); if (typeof toast === 'function') toast('✕', 'Fichier introuvable en ligne', 'var(--danger)'); });
+    }, true);
+  });
   decorateSoon();
 }
 
@@ -11097,7 +11218,10 @@ async function start() {
   window.addEventListener('offline', () => setState('offline'));
   setInterval(() => {
     if (ready && dirty.size) schedule();
-    if (ready && upFail.size) { upFail.clear(); decorateSoon(); }   // pièces jointes refusées : nouvel essai
+    if (ready && upFail.size) {   // pièces jointes refusées : nouvel essai (sauf les trop grosses, refusées de toute façon)
+      let n = 0; upFail.forEach((v, id) => { if (v !== TOO_BIG) { upFail.delete(id); n++; } });
+      if (n) decorateSoon();
+    }
   }, 30000);
 }
 
@@ -11325,7 +11449,11 @@ css.textContent = `
   #pm-volumes table{min-width:0}
   /* Grilles écrites en dur dans les pages */
   [style*="grid-template-columns:repeat(4,1fr)"]{grid-template-columns:repeat(2,minmax(0,1fr))!important}
-  #immoSection > div[style*="grid-template-columns:130px"],#immoRows > div{grid-template-columns:88px minmax(0,1fr) 84px 32px!important}
+  /* Lignes d'un budget : n° + montant + ✕ sur une ligne, description en dessous (avant : n° et description coupés, V5) */
+  #immoSection > div[style*="grid-template-columns:130px"],#immoRows > div{grid-template-columns:minmax(0,1fr) 110px 32px!important}
+  #immoSection > div[style*="grid-template-columns:130px"] > :nth-child(2){display:none}
+  #immoRows > div > :nth-child(2){grid-column:1/-1;grid-row:2}
+  #immoRows > div{padding-bottom:8px;border-bottom:1px dashed var(--border)}
   [id^="pm-bom-"] > div{flex-wrap:wrap}
   [id^="pm-bom-"] > div > div[style*="grid-template-columns"]{order:9;flex:1 1 100%!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
   [id^="pm-docs-"] > div{grid-template-columns:repeat(2,minmax(0,1fr))!important;padding-bottom:10px;border-bottom:1px solid var(--border)}

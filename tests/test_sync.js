@@ -311,6 +311,43 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   check('connecté : badge « Non sauvegardé » masqué', await A.evaluate(() => document.body.classList.contains('fb-on') && getComputedStyle(document.getElementById('unsavedBadge')).display === 'none'));
   check('compte non autorisé : note « sur ce poste pour l\'instant »', await D.evaluate(() => !document.body.classList.contains('fb-on') && /Sur ce poste pour l'instant/.test(document.getElementById('xa-box').textContent)));
 
+  console.log('14. Documents des budgets (en ligne dès l\'ajout, reçus par les autres postes) ; fichier de plus de 20 Mo');
+  const battTxt = p => p.evaluate(() => { const r = document.querySelector('#b-att-box .xa-file'), s = r && r.querySelector('.fb-att'); return s ? s.textContent : null; });
+  async function waitBatt(p, txt, ms = 8000) { const t = Date.now(); let s; while (Date.now() - t < ms) { s = await battTxt(p); if (s === txt) return true; await sleep(100); } return s; }
+  await A.evaluate(() => { S.budgets.push({ id: 'BCX', projet: 'P1', type: 'CAPEX', label: 'Budget CAPEX test', montant: 5000, devise: 'EUR', immobilisations: [] }); saveSettings(); });
+  await settle(A, B);
+  await A.evaluate(() => { switchApp('achats'); goTo('budget'); openEditBudget('BCX'); });
+  await sleep(200);
+  await A.setInputFiles('#b-att-box input[data-ba-up]', pdf('accord-capex.pdf', 'accord'));
+  r = await waitBatt(A, '☁ en ligne');
+  const bid = await A.evaluate(() => (budgetFormAtts()[0] || {}).id);
+  check('budget : document en ligne avant même d\'enregistrer', r === true && !!bid && files.has('app/files/' + bid), [r, bid]);
+  await A.evaluate(() => confirmBudget());
+  await settle(A, B);
+  const bB = (((await getLS(B, 'suivi_settings')) || {}).budgets || []).find(b => b.id === 'BCX') || {};
+  check('B reçoit le budget avec son document, fichier compris', (bB.attachments || []).some(a => a.id === bid) && await idb(B, 'has', bid));
+  await idb(B, 'del', bid);
+  await B.evaluate(() => { switchApp('achats'); goTo('budget'); openEditBudget('BCX'); });
+  r = await waitBatt(B, '☁ en ligne');
+  check('B : document absent du poste marqué « ☁ en ligne »', r === true, r);
+  const reqs2 = [], onReq2 = q => reqs2.push(q.url());
+  B.context().on('request', onReq2);
+  const [tab2] = await Promise.all([B.context().waitForEvent('page', { timeout: 8000 }).catch(() => null), B.click('#b-att-box .xa-file-n')]);
+  const opened2 = await waitFor(async () => reqs2.some(u => u.includes(encodeURIComponent('app/files/' + bid))));
+  B.context().off('request', onReq2);
+  check('B : document ouvert depuis sa copie en ligne', opened2, reqs2);
+  if (tab2) await tab2.close().catch(() => {});
+  await B.evaluate(() => closeOv('ovBudget'));
+  // Pièce jointe de plus de 20 Mo ajoutée avant la limite : refusée par Storage, mais l'achat part quand même
+  await A.evaluate(() => { closeOv('ovBudget'); return new Promise(res => { const q = indexedDB.open('hp_files', 1); q.onsuccess = () => { const t = q.result.transaction('files', 'readwrite'); t.objectStore('files').put({ blob: new Blob([new Uint8Array(21 * 1048576)], { type: 'application/pdf' }), name: 'gros.pdf', type: 'application/pdf' }, 'Fbig1'); t.oncomplete = res; }; }); });
+  await A.evaluate(() => { const p = purchases.find(p => p.id === 'IDPJ2'); p.attachments.push({ id: 'Fbig1', name: 'gros.pdf', size: 21 * 1048576, type: 'application/pdf' }); autosave(); });
+  await settle(A, B);
+  check('plus de 20 Mo : l\'achat part quand même', ((await recB('IDPJ2')).attachments || []).some(a => a.id === 'Fbig1'));
+  check('plus de 20 Mo : fichier non envoyé, synchro sans erreur', !files.has('app/files/Fbig1') && (await A.evaluate(() => fbSync.state())) === 'ok', await A.evaluate(() => fbSync.state()));
+  await A.evaluate(() => editRow('IDPJ2'));
+  r = await waitAtt(A, '⚠ trop gros (20 Mo max)', 1);
+  check('plus de 20 Mo : « ⚠ trop gros (20 Mo max) » à côté du fichier', r === true, r);
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();
