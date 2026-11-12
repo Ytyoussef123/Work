@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Tests de plateforme.html (Playwright est fourni par l'environnement)",
+  "devDependencies": { "jszip": "3.10.1" }
+}

@@ -10700,8 +10700,9 @@ const P = Storage.prototype, oSet = P.setItem, oRem = P.removeItem;
 const zipKeys = new Set();
 P.setItem = function (k, v) { const r = oSet.apply(this, arguments); if (this === localStorage && KEYS[k] && !applying) onLocalChange(k); return r; };
 P.removeItem = function (k) { const r = oRem.apply(this, arguments); if (this === localStorage && KEYS[k] && !applying) onLocalChange(k); return r; };
+let zipDepth = 0;   // > 0 pendant tout loadPlatformZip, y compris la partie Achats+ (extras, fournisseurs)
 function onLocalChange(k) {
-  if (window.__platformLoading) { zipKeys.add(k); watchZip(); return; }   // chargement d'un ZIP : on demandera
+  if (window.__platformLoading || zipDepth) { zipKeys.add(k); watchZip(); return; }   // chargement d'un ZIP : on demandera
   dirty.add(k); saveDirty(); schedule();
 }
 
@@ -10808,23 +10809,33 @@ function onSnap(k, snap) {
   });
   if (ids.length) return reconcile(k, ids);
 }
-async function reconcile(k, ids) {
+async function reconcile(k, ids, tries) {
+  const raw0 = localStorage.getItem(k);
   const found = {}, lv = parseLocal(k), loc = split(k, lv, found), rem = remote[k] || {};
   const b = base[k] || (base[k] = {});
   const recs = Object.assign({}, loc);
-  let applied = false;
+  const nb = {};   // nouvelles empreintes communes (undefined = à retirer), appliquées seulement à la fin
+  let applied = false, pending = false;
   for (const id of ids) {
     const r = rem[id], l = loc[id], lh = l ? l.h : undefined;
     if (lh === b[id]) {                       // pas de modification locale en attente → on prend celle du serveur
-      if (r) { if (r.h !== lh) { recs[id] = r; applied = true; } b[id] = r.h; }
-      else { if (l) { delete recs[id]; applied = true; } delete b[id]; }
+      if (r) { if (r.h !== lh) { recs[id] = r; applied = true; } nb[id] = r.h; }
+      else { if (l) { delete recs[id]; applied = true; } nb[id] = undefined; }
     } else if (r ? r.h === lh : !l) {         // déjà identiques
-      if (r) b[id] = r.h; else delete b[id];
-    } else { dirty.add(k); }                  // modification locale en attente : elle sera envoyée (la plus récente gagne)
+      nb[id] = r ? r.h : undefined;
+    } else pending = true;                    // modification locale en attente : elle sera envoyée (la plus récente gagne)
   }
+  let v;
+  if (applied) {
+    v = await rebuild(k, recs, lv, found);    // peut attendre le téléchargement d'images
+    // Saisie locale pendant l'attente : on recommence avec la version locale à jour au lieu de l'écraser
+    if (localStorage.getItem(k) !== raw0 && (tries || 0) < 3) return reconcile(k, ids, (tries || 0) + 1);
+  }
+  Object.keys(nb).forEach(id => { if (nb[id] === undefined) delete b[id]; else b[id] = nb[id]; });
+  if (pending) dirty.add(k);
   saveBase(); saveDirty();
   if (applied) {
-    setLocal(k, await rebuild(k, recs, lv, found));
+    setLocal(k, v);
     received.add(k); refreshSoon();
     if (k === 'suivi_autosave') pullFiles();
   }
@@ -10906,7 +10917,7 @@ let zipWatch = null;
 function watchZip() {
   if (zipWatch) return;
   zipWatch = setInterval(() => {
-    if (window.__platformLoading) return;
+    if (window.__platformLoading || zipDepth) return;
     clearInterval(zipWatch); zipWatch = null;
     if (ready) run(askZip);
   }, 300);
@@ -10980,7 +10991,19 @@ function loadJs(urls) {
     tryI(0);
   });
 }
+// Enveloppe la version la plus externe de loadPlatformZip (Achats+ l'enveloppe déjà : ses écritures
+// d'extras arrivent après la fin de __platformLoading et seraient envoyées sans confirmation)
+function wrapZipLoad() {
+  const oL = window.loadPlatformZip;
+  if (typeof oL !== 'function') return;
+  window.loadPlatformZip = async function () {
+    zipDepth++;
+    try { return await oL.apply(this, arguments); }
+    finally { zipDepth--; }
+  };
+}
 async function start() {
+  wrapZipLoad();
   injectUI();
   if (location.protocol === 'file:') { setState('file'); return; }
   setState('init');
@@ -11020,6 +11043,7 @@ function refreshUI(all) {
       if (pageOn('page-params') && typeof renderParams === 'function') renderParams();
     }
   } catch (e) { console.error('fb refresh', e); }
+  try { const h = $('main-home'); if (h && h.classList.contains('on') && typeof window.hpRender === 'function') window.hpRender(); } catch (e) {}
   const others = ['eng_db', 'pm_db', 'hp_suppliers'].some(has);
   received.clear();
   if (others) showBanner();

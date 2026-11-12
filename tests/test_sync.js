@@ -5,6 +5,7 @@ const fs = require('fs'), path = require('path');
 const APP = process.argv[2] || path.join(__dirname, '..', 'plateforme.html');
 const MOCK = fs.readFileSync(path.join(__dirname, 'mock_firebase.js'), 'utf8');
 const HTML = fs.readFileSync(APP, 'utf8');
+const JSZIP = (() => { try { return fs.readFileSync(path.join(__dirname, 'node_modules/jszip/dist/jszip.min.js'), 'utf8'); } catch (e) { return null; } })();
 
 // ─── Faux serveur ───
 const docs = new Map(), files = new Map(), listens = [];
@@ -61,6 +62,7 @@ async function device(name, seed, email) {
   await ctx.route('**/*', async route => {
     const u = route.request().url();
     if (u.startsWith('http://app.test/')) return route.fulfill({ contentType: 'text/html', body: HTML });
+    if (JSZIP && /jszip/.test(u)) return route.fulfill({ contentType: 'text/javascript', body: JSZIP });
     if (u.includes('/firebasejs/') || u.includes('npm/firebase@')) return route.fulfill({ contentType: 'text/javascript', body: u.includes('-app-compat') ? MOCK : '' });
     if (u.startsWith('https://firebasestorage.googleapis.com/')) {
       const p = decodeURIComponent(u.split('/o/')[1].split('?')[0]); const d = files.get(p);
@@ -215,6 +217,26 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   check('A rechargé : synchronisé sans question', (await A.evaluate(() => fbSync.state())) === 'ok' && !(await A.$('.fb-dlg')));
   check('aucune écriture au rechargement', stats.writes === w1, stats.writes - w1);
   for (const k of ['suivi_autosave','suivi_settings','eng_db','pm_db','hp_suppliers']) check('A, B, C identiques : ' + k, canon(await getLS(A, k)) === canon(await getLS(B, k)) && canon(await getLS(B, k)) === canon(await getLS(C, k)));
+
+
+  console.log('12. Restauration d\'un ZIP pendant la synchro');
+  if (!JSZIP) console.log('  (ignoré : lancer « npm install » dans tests/ pour JSZip)');
+  else {
+    await A.waitForFunction(() => typeof JSZip !== 'undefined', null, { timeout: 8000 });
+    const before = [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/')).sort().join();
+    const w2 = stats.writes;
+    A.__dialog = 'dismiss';
+    await A.evaluate(async () => { const z = new JSZip(); z.file('purchasing_followup.csv', '﻿"ID","Ligne","Projet","Description"\r\n"IDZIP1","1","ZIPPROJ","Achat du ZIP"'); z.file('purchasing_extras.json', JSON.stringify({ version: 1, extras: { IDZIP1: { line: 1, wf: 'Commandé' } }, suppliers: { ZIPF: { delai: '9' } } })); await window.loadPlatformZip(await z.generateAsync({ type: 'blob' })); });
+    await settle(A); await sleep(800);
+    A.__dialog = 'accept';
+    check('ZIP refusé : rien envoyé au serveur', stats.writes === w2 && [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/')).sort().join() === before, stats.writes - w2);
+    check('ZIP refusé : achats de l\'équipe repris', (await A.evaluate(() => purchases.map(p => p.id).sort().join())) === (await getLS(B, 'suivi_autosave')).map(p => p.id).sort().join());
+    check('ZIP refusé : fournisseurs de l\'équipe repris', !(await getLS(A, 'hp_suppliers')).ZIPF);
+    await A.evaluate(async () => { const z = new JSZip(); z.file('purchasing_followup.csv', '﻿"ID","Ligne","Projet","Description"\r\n"IDZIP1","1","ZIPPROJ","Achat du ZIP"'); z.file('purchasing_extras.json', JSON.stringify({ version: 1, extras: { IDZIP1: { line: 1, wf: 'Commandé' } }, suppliers: { ZIPF: { delai: '9' } } })); await window.loadPlatformZip(await z.generateAsync({ type: 'blob' })); });
+    await settle(A, B); await sleep(800);
+    check('ZIP accepté : B reçoit l\'achat du ZIP avec ses extras', ((await getLS(B, 'suivi_autosave')).find(p => p.id === 'IDZIP1') || {}).wf === 'Commandé');
+    check('ZIP accepté : B reçoit les fournisseurs du ZIP', !!((await getLS(B, 'hp_suppliers')) || {}).ZIPF);
+  }
 
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
