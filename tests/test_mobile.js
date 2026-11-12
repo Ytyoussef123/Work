@@ -1,5 +1,5 @@
 // Vue téléphone : chaque page doit tenir dans la largeur de l'écran (iPhone 13 par défaut, 390 px),
-// puis vérification des interactions (onglets, puces, cartes, barre d'actions, ☁, tiroir, pastilles).
+// puis vérification des interactions (onglets, menu ☰, cartes, barre d'actions, ☁, tiroir, pastilles).
 // Lancer : node tests/test_mobile.js [fichier.html] [--device "iPhone SE"] [--shots dossier] [--quiet]
 const { chromium, devices } = require('playwright');
 const fs = require('fs'), path = require('path');
@@ -121,17 +121,15 @@ const MEASURE = `(() => {
     const t = document.getElementById('m-tabbar'), r = t.getBoundingClientRect();
     return getComputedStyle(t).display !== 'none' && t.querySelectorAll('.m-tab').length === 4 && Math.round(r.bottom) === innerHeight && getComputedStyle(document.querySelector('.app-rail')).display === 'none' || { r: r.bottom, h: innerHeight };
   }));
-  await tap('#m-tabbar [data-app="achats"]');
-  await chk('onglet Achats : app ouverte, onglet actif, la puce active = la page affichée', () => page.evaluate(() => {
-    const NAMES = { nouveau: 'Nouvel achat', liste: 'Liste des achats', budget: 'Budget', livraisons: 'Livraisons', fournisseurs: 'Fournisseurs', stats: 'Statistiques', params: 'Paramètres' };
-    const pg = document.querySelector('#main-achats .page.active').id.replace('page-', ''), chip = document.querySelector('#main-achats .m-chip.on');
-    return document.body.dataset.app === 'achats' && document.querySelector('#m-tabbar [data-app="achats"]').classList.contains('on') && !!chip && chip.textContent.trim().startsWith(NAMES[pg]) || { pg, chip: chip && chip.textContent };
-  }));
+  await tap('#m-tabbar [data-app="achats"]');  await chk('onglet Achats : app ouverte, onglet actif, pas de rangée de puces (pages dans le menu ☰)', () => page.evaluate(() =>
+    document.body.dataset.app === 'achats' && document.querySelector('#m-tabbar [data-app="achats"]').classList.contains('on') && !document.querySelector('.m-subnav, .m-chip') || document.body.dataset.app));
   await page.evaluate(() => window.scrollTo(0, 400));
-  await page.evaluate(() => [...document.querySelectorAll('#main-achats .m-chip')].find(b => b.textContent.includes('Liste')).click());
-  await page.waitForTimeout(250);
-  await chk('puce « Liste des achats » : page affichée, puce active, retour en haut', () => page.evaluate(() =>
-    document.getElementById('page-liste').classList.contains('active') && document.querySelector('#main-achats .m-chip.on').textContent.includes('Liste') && window.scrollY === 0 || window.scrollY));
+  await tap('#mobileMenuBtn'); await page.waitForTimeout(300);   // le tiroir glisse en 0,25 s
+  await page.evaluate(() => [...document.querySelectorAll('#sidebar-achats nav .nav-item')].find(b => b.textContent.includes('Liste')).click());
+  await page.waitForTimeout(350);
+  await chk('menu ☰ › « Liste des achats » : page affichée, menu refermé, retour en haut', () => page.evaluate(() =>
+    document.getElementById('page-liste').classList.contains('active') && !document.body.classList.contains('menu-open') && window.scrollY === 0 || [document.body.classList.contains('menu-open'), window.scrollY]));
+
   await tap('#m-tabbar [data-app="projects"]');
   await tap('#m-tabbar [data-app="achats"]');
   await chk('retour sur Achats : la dernière page (Liste) est rouverte', () => page.evaluate(() => document.getElementById('page-liste').classList.contains('active')));
@@ -160,6 +158,20 @@ const MEASURE = `(() => {
     return (d.style.display === 'none' ? '' : d.textContent.trim()) === b.textContent.trim();
   }));
   await chk('pastille de l\'onglet Achats = livraisons en retard', () => page.evaluate(() => document.querySelector('#m-tabbar [data-app="achats"] .m-bd').textContent.trim() === document.getElementById('xa-nc-liv').textContent.trim()));
+  await page.evaluate(() => { switchApp('projects'); pmEditProject('Pp1'); pmShowTab('outils'); pmToolsView = 'bom'; pmRenderTools(); });
+  await page.waitForTimeout(300);
+  await chk('Outils & Suivi (Transformer) : grille, jalons en lignes, outils en colonnes sous leur groupe', () => page.evaluate(() => {
+    const w = document.querySelector('#pm-tools .pmx-wrap'); if (!w) return 'pas de grille';
+    const rows = document.querySelectorAll('.pmx tbody tr').length, cols = document.querySelectorAll('.pmx thead tr:nth-child(2) th').length;
+    const first = document.querySelector('.pmx tbody tr th.pmx-l').textContent, grp = document.querySelector('.pmx th.pmx-g').textContent;
+    return rows === 11 && cols === 2 && first === 'Drawing release' && /hors pack/.test(grp) && document.documentElement.scrollWidth <= innerWidth || { rows, cols, first, grp };
+  }));
+  await tap('.pmx tbody tr:nth-child(3) td');
+  await chk('grille : toucher une case ouvre la fenêtre du jalon', () => page.evaluate(() => { const o = document.getElementById('ms-popup-ov'); const ok = !!o; if (o) o.remove(); return ok; }));
+  await tap('.pmx thead tr:nth-child(2) th > div');
+  const inTool = await page.evaluate(() => pmEditingTool === 0);
+  await page.evaluate(() => pmCloseTool()); await page.waitForTimeout(200);
+  await chk('grille : toucher un nom ouvre l\'outil, « Retour » ramène à la grille', () => page.evaluate(ok => ok && !!document.querySelector('#pm-tools .pmx-wrap') || ok, inTool));
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

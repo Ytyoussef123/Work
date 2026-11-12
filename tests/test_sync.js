@@ -226,17 +226,29 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
     await A.waitForFunction(() => typeof JSZip !== 'undefined', null, { timeout: 8000 });
     const before = [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/')).sort().join();
     const w2 = stats.writes;
-    A.__dialog = 'dismiss';
-    await A.evaluate(async () => { const z = new JSZip(); z.file('purchasing_followup.csv', '﻿"ID","Ligne","Projet","Description"\r\n"IDZIP1","1","ZIPPROJ","Achat du ZIP"'); z.file('purchasing_extras.json', JSON.stringify({ version: 1, extras: { IDZIP1: { line: 1, wf: 'Commandé' } }, suppliers: { ZIPF: { delai: '9' } } })); await window.loadPlatformZip(await z.generateAsync({ type: 'blob' })); });
+    const loadZip = (id, proj, sup) => A.evaluate(async ([id, proj, sup]) => { const z = new JSZip(); z.file('purchasing_followup.csv', '\ufeff"ID","Ligne","Projet","Description"\r\n"' + id + '","1","' + proj + '","Achat du ZIP"'); z.file('purchasing_extras.json', JSON.stringify({ version: 1, extras: { [id]: { line: 1, wf: 'Commandé' } }, suppliers: { [sup]: { delai: '9' } } })); await window.loadPlatformZip(await z.generateAsync({ type: 'blob' })); }, [id, proj, sup]);
+    await loadZip('IDZIP1', 'ZIPPROJ', 'ZIPF');
+    await A.waitForSelector('.fb-dlg [data-z="ignore"]', { timeout: 8000 });
+    check('ZIP chargé : question Fusionner / Remplacer / Ignorer (plus de OK / Annuler)', !!(await A.$('.fb-dlg [data-z="merge"]')) && !!(await A.$('.fb-dlg [data-z="send"]')));
+    await A.click('.fb-dlg [data-z="ignore"]');
     await settle(A); await sleep(800);
-    A.__dialog = 'accept';
-    check('ZIP refusé : rien envoyé au serveur', stats.writes === w2 && [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/')).sort().join() === before, stats.writes - w2);
-    check('ZIP refusé : achats de l\'équipe repris', (await A.evaluate(() => purchases.map(p => p.id).sort().join())) === (await getLS(B, 'suivi_autosave')).map(p => p.id).sort().join());
-    check('ZIP refusé : fournisseurs de l\'équipe repris', !(await getLS(A, 'hp_suppliers')).ZIPF);
-    await A.evaluate(async () => { const z = new JSZip(); z.file('purchasing_followup.csv', '﻿"ID","Ligne","Projet","Description"\r\n"IDZIP1","1","ZIPPROJ","Achat du ZIP"'); z.file('purchasing_extras.json', JSON.stringify({ version: 1, extras: { IDZIP1: { line: 1, wf: 'Commandé' } }, suppliers: { ZIPF: { delai: '9' } } })); await window.loadPlatformZip(await z.generateAsync({ type: 'blob' })); });
+    check('ZIP ignoré : rien envoyé au serveur', stats.writes === w2 && [...docs.keys()].filter(p => p.startsWith('app/suivi_autosave/r/')).sort().join() === before, stats.writes - w2);
+    check('ZIP ignoré : achats de l\'équipe repris', (await A.evaluate(() => purchases.map(p => p.id).sort().join())) === (await getLS(B, 'suivi_autosave')).map(p => p.id).sort().join());
+    check('ZIP ignoré : fournisseurs de l\'équipe repris', !(await getLS(A, 'hp_suppliers')).ZIPF);
+    const teamIds = (await getLS(B, 'suivi_autosave')).map(p => p.id);
+    await loadZip('IDZIP2', 'ZIPPROJ', 'ZIPG');
+    await A.waitForSelector('.fb-dlg [data-z="merge"]', { timeout: 8000 });
+    await A.click('.fb-dlg [data-z="merge"]');
     await settle(A, B); await sleep(800);
-    check('ZIP accepté : B reçoit l\'achat du ZIP avec ses extras', ((await getLS(B, 'suivi_autosave')).find(p => p.id === 'IDZIP1') || {}).wf === 'Commandé');
-    check('ZIP accepté : B reçoit les fournisseurs du ZIP', !!((await getLS(B, 'hp_suppliers')) || {}).ZIPF);
+    const afterMerge = (await getLS(B, 'suivi_autosave')).map(p => p.id);
+    check('ZIP fusionné : B reçoit l\'achat du ZIP et garde tous ceux de l\'équipe', afterMerge.includes('IDZIP2') && teamIds.every(id => afterMerge.includes(id)), [teamIds, afterMerge]);
+    check('ZIP fusionné : fournisseurs du ZIP et de l\'équipe réunis', !!((await getLS(B, 'hp_suppliers')) || {}).ZIPG && !!((await getLS(B, 'hp_suppliers')) || {}).F1, await getLS(B, 'hp_suppliers'));
+    await loadZip('IDZIP1', 'ZIPPROJ', 'ZIPF');
+    await A.waitForSelector('.fb-dlg [data-z="send"]', { timeout: 8000 });
+    await A.click('.fb-dlg [data-z="send"]');   // « Remplacer » : le garde-fou d'effacement demande confirmation (accepté)
+    await settle(A, B); await sleep(800);
+    check('ZIP « Remplacer » : B reçoit l\'achat du ZIP avec ses extras', ((await getLS(B, 'suivi_autosave')).find(p => p.id === 'IDZIP1') || {}).wf === 'Commandé');
+    check('ZIP « Remplacer » : B reçoit les fournisseurs du ZIP', !!((await getLS(B, 'hp_suppliers')) || {}).ZIPF);
   }
 
   console.log('13. Pièces jointes : en ligne dès l\'ajout, état affiché, un fichier refusé ne bloque pas le reste');
@@ -406,6 +418,70 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   await sleep(200);
   panel = await D.evaluate(() => document.getElementById('rp-panel').textContent);
   check('compte non autorisé : « Connectez-vous », pas de bouton Activer', /Connectez-vous avec ☁/.test(panel) && !(await D.$('#rp-panel [data-rap="on"]')), panel.slice(0, 200));
+
+  console.log('16. Données sûres : enregistrement automatique des projets, fusion au lieu d\'écraser');
+  const m3 = (b, a, c, keep) => A.evaluate(([b, a, c, keep]) => fbSync.merge3(b, a, c, keep), [b, a, c, keep]);
+  let mr = await m3({ c: [{ text: 'x', date: '1' }] }, { c: [{ text: 'x', date: '1' }, { text: 'mien', date: '2' }] }, { c: [{ text: 'x', date: '1' }, { text: 'autre', date: '3' }] });
+  check('fusion : commentaires des deux côtés gardés', JSON.stringify(mr.c.map(x => x.text)) === '["x","mien","autre"]', mr);
+  mr = await m3({ t: [{ id: 'T1', name: 'a', status: 'En cours' }] }, { t: [{ id: 'T1', name: 'a2', status: 'En cours' }] }, { t: [{ id: 'T1', name: 'a', status: 'Bloqué' }, { id: 'T2', name: 'neuf' }] });
+  check('fusion : par id, chaque côté garde sa modification, l\'ajout de l\'autre arrive', mr.t.length === 2 && mr.t[0].name === 'a2' && mr.t[0].status === 'Bloqué' && mr.t[1].id === 'T2', mr);
+  mr = await m3({ n: [{ id: 'N1' }, { id: 'N2' }] }, { n: [{ id: 'N1' }, { id: 'N2' }] }, { n: [{ id: 'N1' }] });
+  check('fusion : suppression d\'un côté appliquée si l\'autre n\'y a pas touché', mr.n.length === 1, mr);
+  mr = await m3({ n: [{ id: 'N1' }, { id: 'N2' }] }, { n: [{ id: 'N1' }, { id: 'N2' }], x: 1 }, { n: [{ id: 'N1' }] }, true);
+  check('fusion « projet ouvert » : rien n\'est retiré de l\'écran', mr.n.length === 2 && mr.x === 1, mr);
+  mr = await m3(undefined, { s: 'mien', l: ['a'] }, { s: 'autre', l: ['b'] });
+  check('fusion sans base : valeur simple = la sienne, listes réunies', mr.s === 'mien' && JSON.stringify(mr.l) === '["a","b"]', mr);
+  const pmOf = async (p, k = 'pm_db') => ((await getLS(p, k)) || {}).projects.find(x => x.id === 'Pp1');
+  const noteTexts = pr => ((pr && pr.tools && pr.tools[0] && pr.tools[0].notes) || []).map(n => n.text);
+  // a) Note ajoutée dans un outil, sans « Sauvegarder »
+  await A.evaluate(() => { switchApp('projects'); pmEditProject('Pp1'); pmShowTab('outils'); pmEditTool(0); });
+  await sleep(300);
+  check('projet ouvert : « Enregistrement automatique » affiché', /Enregistrement automatique/.test(await A.evaluate(() => (document.getElementById('pm-autosave') || {}).textContent || '')));
+  await A.fill('[id="pm-note-input-t:0"]', 'Note sans Sauvegarder');
+  await A.click('button[onclick="pmAddNote(\'t:0\')"]');
+  check('note enregistrée toute seule (sans « Sauvegarder »)', await waitFor(async () => noteTexts(await pmOf(A)).includes('Note sans Sauvegarder'), 5000), noteTexts(await pmOf(A)));
+  await settle(A, B);
+  check('… et reçue par B', noteTexts(await pmOf(B)).includes('Note sans Sauvegarder'));
+  // b) Jalon modifié puis départ immédiat du projet
+  await A.evaluate(() => pmOpenMsPopup('t:0', 0));
+  await A.selectOption('#ms-pop-status', 'Fait');
+  await A.evaluate(() => { document.querySelector('#ms-popup-ov button[onclick^="pmSaveMsPopup"]').click(); pmProjTab('list'); });
+  check('jalon modifié puis « Retour à la liste » aussitôt : enregistré', ((await pmOf(A)).tools[0].milestones[0] || {}).status === 'Fait', (await pmOf(A)).tools[0].milestones[0]);
+  // c) Projet ouvert chez A, B ajoute un commentaire : A le voit sans rouvrir
+  await settle(A, B);
+  await A.evaluate(() => { pmEditProject('Pp1'); pmShowTab('outils'); });
+  await B.evaluate(() => { switchApp('projects'); pmEditProject('Pp1'); pmShowTab('outils'); pmOpenMsPopup('t:0', 1); document.getElementById('ms-pop-ctext').value = 'Commentaire de B'; pmMsAddComment('t:0', 1); document.getElementById('ms-popup-ov').remove(); });
+  await settle(B, A);
+  check('projet ouvert chez A : le commentaire de B y arrive', await waitFor(async () => (await A.evaluate(() => ((pmCurProj.tools[0].milestones[1] || {}).comments || []).map(c => c.text))).includes('Commentaire de B'), 5000));
+  // d) Conflit : A modifie hors connexion pendant que B modifie le même projet, puis A se reconnecte
+  await A.evaluate(() => window.__mockLogin(null));
+  await waitState(A, 'out');
+  await A.evaluate(() => { pmEditTool(0); });
+  await sleep(200);
+  await A.fill('[id="pm-note-input-t:0"]', 'Note de A hors ligne');
+  await A.click('button[onclick="pmAddNote(\'t:0\')"]');
+  await waitFor(async () => noteTexts(await pmOf(A)).includes('Note de A hors ligne'), 5000);
+  await B.evaluate(() => { pmOpenMsPopup('t:0', 2); document.getElementById('ms-pop-ctext').value = 'Commentaire de B pendant ce temps'; pmMsAddComment('t:0', 2); document.getElementById('ms-popup-ov').remove(); });
+  await settle(B);
+  await login(A, 'a@test.fr');
+  await settle(A, B); await sleep(600); await settle(A, B);
+  const both = async p => { const pr = await pmOf(p); return noteTexts(pr).includes('Note de A hors ligne') && ((pr.tools[0].milestones[2] || {}).comments || []).some(c => c.text === 'Commentaire de B pendant ce temps') && noteTexts(pr).includes('Note sans Sauvegarder'); };
+  check('reconnexion : la note de A ET le commentaire de B sont gardés (B)', await both(B), [noteTexts(await pmOf(B)), (await pmOf(B)).tools[0].milestones[2]]);
+  check('… et chez A', await both(A));
+  const srv = JSON.parse(docs.get('app/pm_db/r/projects:Pp1').j);
+  check('… et en ligne', noteTexts(srv).includes('Note de A hors ligne') && (srv.tools[0].milestones[2].comments || []).some(c => c.text === 'Commentaire de B pendant ce temps'));
+  // e) Première connexion d'un poste dont le projet diffère de celui de l'équipe : question, puis fusion
+  const pmE = await getLS(B, 'pm_db');
+  pmE.projects.find(p => p.id === 'Pp1').tools[0].notes.push({ id: 'NE1', kind: 'Note', text: 'Note du poste E', ts: 1, jalon: '', status: '', urgency: '', dueDate: '' });
+  pmE.projects.find(p => p.id === 'Pp1').modified = 1;   // version plus ancienne
+  const E = await device('E', { pm_db: JSON.stringify(pmE) }, 'c@test.fr');
+  await login(E, 'c@test.fr');
+  const askedE = await E.waitForSelector('.fb-dlg [data-m="merge"]', { timeout: 8000 }).then(() => true, () => false);
+  check('première connexion, même projet mais contenu différent : la question est posée (avant : remplacé sans rien dire)', askedE);
+  if (askedE) await E.click('.fb-dlg [data-m="merge"]');
+  await settle(E, A, B); await sleep(600); await settle(E, A, B);
+  const prB = await pmOf(B);
+  check('fusion : la note du poste E arrive chez B, rien de l\'équipe n\'est perdu', noteTexts(prB).includes('Note du poste E') && noteTexts(prB).includes('Note de A hors ligne') && (prB.tools[0].milestones[0] || {}).status === 'Fait', noteTexts(prB));
 
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);

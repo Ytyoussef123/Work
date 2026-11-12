@@ -10659,6 +10659,9 @@ const dirty = new Set(jget('fb_dirty', []));
 const saveBase  = () => { jset('fb_base', base); jset('fb_parts', parts); };
 const saveDirty = () => jset('fb_dirty', [...dirty]);
 const saveUp    = () => jset('fb_up', up);
+const baseJ = {};   // clé → { idDoc: texte JSON } de la dernière version commune (en mémoire) : permet une fusion fine (V7)
+const setBaseJ = (k, id, j) => { const m = baseJ[k] || (baseJ[k] = {}); if (j === undefined) delete m[id]; else m[id] = j; };
+const getBaseJ = (k, id, h) => { const j = (baseJ[k] || {})[id]; return j !== undefined && h53(j) === h ? j : undefined; };   // seulement si c'est bien la base actuelle
 
 // ─── IMAGES : data:image… ⇄ « fbimg:<empreinte> » (fichier dans Storage) ───
 const RX_DATA = /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+\/=]+/g;
@@ -10775,6 +10778,70 @@ function mergeMain(lj, rj) {
   return rj;
 }
 
+// ─── FUSION DE DEUX VERSIONS D'UN ENREGISTREMENT (V7) ─────────────────────
+// Deux postes ont modifié le même enregistrement (un projet, un achat…) : on fusionne au lieu que l'un
+// écrase l'autre. base = dernière version commune connue (undefined si inconnue), a = l'une, b = l'autre.
+// Valeur simple modifiée des deux côtés : celle de a. Objets : champ par champ. Listes d'objets à id
+// (outils, jalons, notes…) : par id, dans l'ordre de a puis les nouveaux de b. Autres listes
+// (commentaires {text, date}…) : union. Une suppression n'est appliquée que si la base est connue et
+// que l'autre côté n'a pas touché à l'élément. keep : rien de ce qui est dans a n'est retiré (projet
+// ouvert à l'écran : ses lignes gardent leur place).
+function merge3(base, a, b, keep) {
+  const J = x => JSON.stringify(x);
+  const ja = J(a), jb = J(b);
+  if (ja === jb) return a;
+  const jbase = base === undefined ? undefined : J(base);
+  if (jbase !== undefined && jb === jbase) return a;                    // seul a a changé
+  if (jbase !== undefined && ja === jbase && !keep) return b;           // seul b a changé
+  const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  if (Array.isArray(a) && Array.isArray(b)) return mergeArr(Array.isArray(base) ? base : undefined, a, b, keep);
+  if (isObj(a) && isObj(b)) {
+    const bo = isObj(base) ? base : undefined, o = {};
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      const inA = k in a, inB = k in b, kb = bo && k in bo;
+      if (inA && inB) o[k] = merge3(kb ? bo[k] : undefined, a[k], b[k], keep);
+      else if (inA) { if (keep || !(kb && J(bo[k]) === J(a[k]))) o[k] = a[k]; }   // retiré par b : seulement si a n'y a pas touché
+      else if (!(kb && J(bo[k]) === J(b[k]))) o[k] = b[k];                        // retiré par a : idem
+    }
+    return o;
+  }
+  if (jbase !== undefined && ja === jbase) return b;                    // (keep) valeur simple changée par b seulement
+  return a;                                                             // changée des deux côtés : celle de a
+}
+function mergeArr(base, a, b, keep) {
+  const J = x => JSON.stringify(x);
+  const idOf = x => x && typeof x === 'object' && !Array.isArray(x) && x.id != null && x.id !== '' ? String(x.id) : null;
+  const all = a.concat(b);
+  if (all.length && all.every(idOf)) {
+    const ma = new Map(a.map(x => [idOf(x), x])), mb = new Map(b.map(x => [idOf(x), x]));
+    const mbase = new Map((base || []).filter(idOf).map(x => [idOf(x), x]));
+    const out = [];
+    for (const x of a) {
+      const k = idOf(x), y = mb.get(k), z = mbase.get(k);
+      if (y !== undefined) out.push(merge3(z, x, y, keep));
+      else if (keep || !(z !== undefined && J(z) === J(x))) out.push(x);     // supprimé par b : gardé si a l'a modifié
+    }
+    for (const y of b) {
+      const k = idOf(y), z = mbase.get(k);
+      if (!ma.has(k) && !(z !== undefined && J(z) === J(y))) out.push(y);   // nouveau chez b (et pas supprimé par a)
+    }
+    return out;
+  }
+  const sa = new Set(a.map(J)), sb = new Set(b.map(J)), sbase = new Set((base || []).map(J));
+  const out = a.filter(x => keep || !(sbase.has(J(x)) && !sb.has(J(x))));   // retiré par b
+  for (const y of b) if (!sa.has(J(y)) && !sbase.has(J(y))) out.push(y);     // ajouté par b
+  return out;
+}
+// Fusion de deux textes JSON d'enregistrement. Sans base commune connue, la version la plus récente
+// (champ modified / modifiedAt) l'emporte sur les valeurs simples ; à égalité : preferA.
+function mergeRec(bj, aj, bjOther, preferA) {
+  const a = JSON.parse(aj), b = JSON.parse(bjOther);
+  if (bj !== undefined) return JSON.stringify(merge3(JSON.parse(bj), a, b));
+  const ts = o => { const v = o && typeof o === 'object' ? (o.modified || o.modifiedAt || o.updatedAt) : 0; const n = typeof v === 'number' ? v : Date.parse(v || ''); return isNaN(n) ? 0 : n; };
+  const ta = ts(a), tb = ts(b);
+  return JSON.stringify(ta > tb || (ta === tb && preferA) ? merge3(undefined, a, b) : merge3(undefined, b, a));
+}
+
 // ─── ÉCRITURE LOCALE (sans redéclencher la synchro) + variables des apps ──
 let applying = 0;
 function replaceInPlace(t, s) {
@@ -10789,7 +10856,7 @@ function setLocal(k, v) {
     if (k === 'suivi_autosave' && Array.isArray(v)) purchases.splice(0, purchases.length, ...v);
     else if (k === 'suivi_settings' && v) replaceInPlace(S, v);
     else if (k === 'eng_db' && v && engInited) replaceInPlace(engDB, v);
-    else if (k === 'pm_db' && v && pmInited) replaceInPlace(pmDB, v);
+    else if (k === 'pm_db' && v && pmInited) { replaceInPlace(pmDB, v); if (typeof window.pmOnTeamUpdate === 'function') setTimeout(window.pmOnTeamUpdate, 0); }   // projet ouvert : fusionné (V7)
   } catch (e) { console.error('fb globals', k, e); }
 }
 
@@ -10875,8 +10942,8 @@ async function pushKey(k) {
   if (cnt) commits.push(batch.commit());
   // Le serveur confirmera plus tard (hors ligne : file d'attente gardée par Firestore). On avance tout de suite.
   const prev = {};
-  send.forEach(id => { prev[id] = b[id]; b[id] = loc[id].h; const n = Math.max(1, Math.ceil(loc[id].j.length / CHUNK)); if (n > 1) np[id] = n; else delete np[id]; });
-  removed.forEach(id => { prev[id] = b[id]; delete b[id]; delete np[id]; });
+  send.forEach(id => { prev[id] = b[id]; b[id] = loc[id].h; setBaseJ(k, id, loc[id].j); const n = Math.max(1, Math.ceil(loc[id].j.length / CHUNK)); if (n > 1) np[id] = n; else delete np[id]; });
+  removed.forEach(id => { prev[id] = b[id]; delete b[id]; delete np[id]; setBaseJ(k, id); });
   if (!blocked.size) dirty.delete(k);   // enregistrements bloqués par un fichier : la base reste « à envoyer »
   saveBase(); saveDirty();
   if (blocked.size) fileFailed(fileErr);
@@ -10912,16 +10979,22 @@ async function reconcile(k, ids, tries) {
   const found = {}, lv = parseLocal(k), loc = split(k, lv, found), rem = remote[k] || {};
   const b = base[k] || (base[k] = {});
   const recs = Object.assign({}, loc);
-  const nb = {};   // nouvelles empreintes communes (undefined = à retirer), appliquées seulement à la fin
+  const nb = {}, nbj = {};   // nouvelles empreintes communes (undefined = à retirer) et leurs textes, appliquées seulement à la fin
   let applied = false, pending = false;
   for (const id of ids) {
     const r = rem[id], l = loc[id], lh = l ? l.h : undefined;
     if (lh === b[id]) {                       // pas de modification locale en attente → on prend celle du serveur
-      if (r) { if (r.h !== lh) { recs[id] = r; applied = true; } nb[id] = r.h; }
+      if (r) { if (r.h !== lh) { recs[id] = r; applied = true; } nb[id] = r.h; nbj[id] = r.j; }
       else { if (l) { delete recs[id]; applied = true; } nb[id] = undefined; }
     } else if (r ? r.h === lh : !l) {         // déjà identiques
-      nb[id] = r ? r.h : undefined;
-    } else pending = true;                    // modification locale en attente : elle sera envoyée (la plus récente gagne)
+      nb[id] = r ? r.h : undefined; if (r) nbj[id] = r.j;
+    } else if (r && l) {                      // modifié ici ET sur un autre poste : fusion (rien n'est perdu), puis envoi (V7)
+      let mj = l.j;
+      try { mj = mergeRec(getBaseJ(k, id, b[id]), l.j, r.j, true); } catch (e) { console.warn('fb fusion', k, id, e); }
+      if (mj === r.j) { recs[id] = r; applied = true; }                       // la fusion donne la version du serveur
+      else { if (mj !== l.j) { recs[id] = { j: mj, o: l.o, h: h53(mj) }; applied = true; } pending = true; }
+      nb[id] = r.h; nbj[id] = r.j;            // la version du serveur est intégrée : nouvelle base commune
+    } else pending = true;                    // supprimé d'un côté, modifié de l'autre : la modification locale sera envoyée
   }
   let v;
   if (applied) {
@@ -10929,7 +11002,7 @@ async function reconcile(k, ids, tries) {
     // Saisie locale pendant l'attente : on recommence avec la version locale à jour au lieu de l'écraser
     if (localStorage.getItem(k) !== raw0 && (tries || 0) < 3) return reconcile(k, ids, (tries || 0) + 1);
   }
-  Object.keys(nb).forEach(id => { if (nb[id] === undefined) delete b[id]; else b[id] = nb[id]; });
+  Object.keys(nb).forEach(id => { if (nb[id] === undefined) { delete b[id]; setBaseJ(k, id); } else { b[id] = nb[id]; setBaseJ(k, id, nbj[id]); } });
   if (pending) dirty.add(k);
   saveBase(); saveDirty();
   if (applied) {
@@ -11058,7 +11131,7 @@ function wireAttachments() {
 // ─── PREMIÈRE SYNCHRO SUR CE POSTE : fusionner ou remplacer ───────────────
 async function firstSync() {
   const rems = {}, locs = {}, lvals = {}, founds = {};
-  let remoteCount = 0, localOnly = 0, localCount = 0;
+  let remoteCount = 0, localOnly = 0, localCount = 0, differ = 0;
   for (const k of Object.keys(KEYS)) {
     const qs = await coll(k).get({ source: 'server' });
     const raw = {}; qs.forEach(d => raw[d.id] = d.data());
@@ -11073,19 +11146,26 @@ async function firstSync() {
     if (Object.keys(rem).length && seedOnly(k, lvals[k])) { locs[k] = {}; continue; }   // exemples créés au 1er lancement : on prend ceux de l'équipe
     const lids = Object.keys(locs[k]); localCount += lids.length;
     localOnly += lids.filter(id => !(id in rem) && id !== '_main').length;
+    differ += lids.filter(id => id in rem && id !== '_main' && rem[id].h !== locs[k][id].h).length;   // même enregistrement, contenu différent (V7)
   }
   let mode = 'replace';
   if (!remoteCount) mode = 'push';
-  else if (localOnly) mode = await askMerge(localOnly, remoteCount);
+  else if (localOnly || differ) mode = await askMerge(localOnly, remoteCount, differ);   // avant V7 : remplacé sans rien demander si tous les id existaient déjà
   for (const k of Object.keys(KEYS)) {
     const rem = rems[k], loc = locs[k];
-    base[k] = {}; parts[k] = {};
+    base[k] = {}; parts[k] = {}; baseJ[k] = {};
     if (mode === 'push' || !Object.keys(rem).length) { if (Object.keys(loc).length) dirty.add(k); continue; }
-    Object.keys(rem).forEach(id => base[k][id] = rem[id].h);
+    Object.keys(rem).forEach(id => { base[k][id] = rem[id].h; setBaseJ(k, id, rem[id].j); });
     let recs = rem;
-    if (mode === 'merge') {
-      recs = Object.assign({}, loc, rem);
-      if (loc._main && rem._main) { const j = mergeMain(loc._main.j, rem._main.j); recs._main = { j, o: 0, h: h53(j) }; }
+    if (mode === 'merge') {   // tout est gardé : enregistrements des deux côtés, et fusion de ceux qui diffèrent (V7)
+      recs = Object.assign({}, rem);
+      for (const id of Object.keys(loc)) {
+        if (!(id in rem)) { recs[id] = loc[id]; continue; }
+        if (loc[id].h === rem[id].h) continue;
+        let j = rem[id].j;
+        try { j = id === '_main' ? mergeMain(loc[id].j, rem[id].j) : mergeRec(undefined, loc[id].j, rem[id].j, false); } catch (e) { console.warn('fb fusion', k, id, e); }
+        recs[id] = { j, o: rem[id].o, h: h53(j) };
+      }
       dirty.add(k);
     }
     setLocal(k, await rebuild(k, recs, lvals[k], founds[k]));
@@ -11094,13 +11174,14 @@ async function firstSync() {
   jset('fb_init', FB_CONFIG.projectId);
   refreshSoon(true);
 }
-function askMerge(nLocal, nRemote) {
+function askMerge(nLocal, nRemote, nDiffer) {
   return new Promise(res => {
     const ov = document.createElement('div'); ov.className = 'fb-ov';
     ov.innerHTML = '<div class="fb-dlg"><h3>☁ Première synchronisation sur ce poste</h3>' +
-      '<p>L\'équipe a déjà <b>' + nRemote + '</b> enregistrement(s) en ligne. Ce poste en a <b>' + nLocal + '</b> qui ne sont pas en ligne.</p>' +
-      '<p><b>Fusionner</b> : ajoute les données de ce poste à celles de l\'équipe (en cas de doublon, la version en ligne gagne).<br>' +
-      '<b>Remplacer</b> : ce poste prend uniquement les données de l\'équipe (les données locales non envoyées sont abandonnées).</p>' +
+      '<p>L\'équipe a déjà <b>' + nRemote + '</b> enregistrement(s) en ligne. Sur ce poste : <b>' + nLocal + '</b> qui ne sont pas en ligne' +
+      (nDiffer ? ' et <b>' + nDiffer + '</b> qui existent aussi en ligne mais avec un contenu différent (commentaires, statuts…)' : '') + '.</p>' +
+      '<p><b>Fusionner</b> (conseillé) : rien n\'est perdu. Les données de ce poste s\'ajoutent à celles de l\'équipe ; pour un même projet ou achat, les deux versions sont réunies (commentaires, notes, jalons des deux côtés ; pour une même case modifiée des deux côtés, la plus récente).<br>' +
+      '<b>Remplacer</b> : ce poste prend uniquement les données de l\'équipe (ce qui n\'existe que sur ce poste est abandonné).</p>' +
       '<div class="fb-row"><button class="btn bs btn-sm" data-m="replace">Remplacer par l\'équipe</button><button class="btn bp btn-sm" data-m="merge">Fusionner</button></div></div>';
     ov.addEventListener('click', e => { const m = e.target.dataset && e.target.dataset.m; if (m) { ov.remove(); res(m); } });
     document.body.appendChild(ov);
@@ -11121,14 +11202,44 @@ async function askZip() {
   const ks = [...zipKeys].filter(k => { const loc = split(k, parseLocal(k), null), b = base[k] || {}; return Object.keys(loc).some(id => loc[id].h !== b[id]) || Object.keys(b).some(id => !(id in loc)); });
   zipKeys.clear();
   if (!ks.length) return;
-  const send = confirm('Un fichier plateforme (ZIP) vient de remplacer des données sur ce poste.\n\nOK : envoyer ces données à toute l\'équipe.\nAnnuler : garder les données de l\'équipe (le contenu du ZIP est ignoré).');
-  if (send) { ks.forEach(k => dirty.add(k)); saveDirty(); schedule(); }
+  const choice = await askZipChoice();   // avant V7 : OK / Annuler, et « Annuler » effaçait le contenu du ZIP
+  if (choice === 'send') { ks.forEach(k => dirty.add(k)); saveDirty(); schedule(); }
+  else if (choice === 'merge') await mergeZip(ks);
   else await resetFromRemote(ks);
+}
+function askZipChoice() {
+  return new Promise(res => {
+    const ov = document.createElement('div'); ov.className = 'fb-ov';
+    ov.innerHTML = '<div class="fb-dlg"><h3>📦 Fichier plateforme (ZIP) chargé</h3>' +
+      '<p>Ses données remplacent pour l\'instant celles de ce poste. Que faire avec celles de l\'équipe en ligne ?</p>' +
+      '<p><b>Fusionner</b> (conseillé) : rien n\'est perdu. Le contenu du ZIP s\'ajoute à celui de l\'équipe ; pour un même projet ou achat, les deux versions sont réunies (commentaires, notes, jalons ; pour une même case, celle du ZIP).<br>' +
+      '<b>Remplacer</b> : le ZIP devient la version de toute l\'équipe (ce qui n\'est pas dans le ZIP est supprimé en ligne).<br>' +
+      '<b>Ignorer le ZIP</b> : on garde les données de l\'équipe ; le contenu du ZIP est abandonné.</p>' +
+      '<div class="fb-row"><button class="btn bs btn-sm" data-z="ignore">Ignorer le ZIP</button><button class="btn bs btn-sm" data-z="send">Remplacer</button><button class="btn bp btn-sm" data-z="merge">Fusionner</button></div></div>';
+    ov.addEventListener('click', e => { const z = e.target.dataset && e.target.dataset.z; if (z) { ov.remove(); res(z); } });
+    document.body.appendChild(ov);
+  });
+}
+async function mergeZip(ks) {   // ZIP + équipe : chaque enregistrement des deux côtés est gardé, ceux qui diffèrent sont fusionnés
+  for (const k of ks) {
+    const found = {}, lv = parseLocal(k), loc = split(k, lv, found), rem = remote[k] || {};
+    const recs = Object.assign({}, rem);
+    for (const id of Object.keys(loc)) {
+      if (!(id in rem) || loc[id].h === rem[id].h) { recs[id] = loc[id]; continue; }
+      let j = loc[id].j;
+      try { j = id === '_main' ? mergeMain(rem[id].j, loc[id].j) : mergeRec(undefined, loc[id].j, rem[id].j, true); } catch (e) { console.warn('fb fusion', k, id, e); }
+      recs[id] = { j, o: loc[id].o, h: h53(j) };
+    }
+    base[k] = {}; Object.keys(rem).forEach(id => { base[k][id] = rem[id].h; setBaseJ(k, id, rem[id].j); });
+    setLocal(k, await rebuild(k, recs, lv, found));
+    dirty.add(k); received.add(k);
+  }
+  saveBase(); saveDirty(); refreshSoon(true); schedule();
 }
 async function resetFromRemote(ks) {
   for (const k of ks) {
     const rem = remote[k] || {};
-    base[k] = {}; Object.keys(rem).forEach(id => base[k][id] = rem[id].h);
+    base[k] = {}; baseJ[k] = {}; Object.keys(rem).forEach(id => { base[k][id] = rem[id].h; setBaseJ(k, id, rem[id].j); });
     setLocal(k, await rebuild(k, rem, parseLocal(k)));
     dirty.delete(k); received.add(k);
   }
@@ -11577,14 +11688,101 @@ function injectUI() {
 document.addEventListener('DOMContentLoaded', start);
 
 // Pour les tests et le dépannage (console)
-window.fbSync = { state: () => state, msg: () => stateMsg, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS,
+window.fbSync = { state: () => state, msg: () => stateMsg, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS, merge3,
   rappels: { items: rpItems, upcoming: rpUpcoming, go: rpGo, fromUrl: rpFromUrl, local: rpLocal } };
+})();
+</script>
+<!-- ═══ PROJETS : ENREGISTREMENT AUTOMATIQUE ET FUSION (V7) ═══ -->
+<script>
+/* ═════════════════════════════════════════════════════════════════════════
+   PROJET OUVERT (Project Master) : chaque modification est enregistrée toute seule, environ 1 s après
+   (avant : seulement avec « Sauvegarder » — quitter le projet, changer d'app ou fermer la page perdait
+   sans prévenir les notes, actions, commentaires de notes et changements de jalons). Les changements
+   reçus de l'équipe pendant l'édition sont fusionnés dans le projet ouvert (fbSync.merge3), au lieu
+   que l'un écrase l'autre. Couche greffée : enveloppes de pmEditProject, pmSaveProject, pmMsPersist,
+   pmProjTab, pmGo, switchApp, pmRenderProjectForm ; aucune fonction de Project Master modifiée.
+   ═════════════════════════════════════════════════════════════════════════ */
+(function () {
+'use strict';
+const ed = () => document.getElementById('pproj-editor');
+const norm = p => { const c = JSON.parse(JSON.stringify(p)); ['volumes', 'products', 'tools', 'toolPacks'].forEach(f => { if (!Array.isArray(c[f])) c[f] = []; }); return c; };
+let openId = null, baseJ = null, timer = null, refreshPending = false;   // baseJ : version du projet d'où vient l'écran
+
+const idx = () => (typeof pmDB !== 'undefined' && pmDB && pmCurProj) ? pmDB.projects.findIndex(p => p.id === pmCurProj.id) : -1;
+const editing = () => typeof pmCurProj !== 'undefined' && !!pmCurProj && !!pmCurProj.id && pmCurProj.id === openId && baseJ !== null && idx() >= 0;
+const popupOpen = () => !!(document.getElementById('ms-popup-ov') || document.getElementById('comments-ov'));
+const typing = () => { const a = document.activeElement, e = ed(); return !!a && !!e && e.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName); };
+function status(t, c) { const s = document.getElementById('pm-autosave'); if (s) { s.textContent = t; s.style.color = c || 'var(--muted)'; } }
+
+// Enregistre le projet ouvert ; si l'équipe l'a modifié entre-temps, fusionne d'abord les deux versions
+function persist() {
+  clearTimeout(timer); timer = null;
+  if (!editing()) return;
+  const i = idx(), dbJ = JSON.stringify(norm(pmDB.projects[i])), curJ = JSON.stringify(pmCurProj);
+  const safe = !popupOpen() && !typing();          // fenêtre ouverte ou saisie en cours : l'écran ne bouge pas
+  const remote = dbJ !== baseJ, local = curJ !== baseJ;
+  if (!remote && !local) { if (refreshPending && safe) refresh(); return; }
+  let next;
+  if (!remote) next = pmCurProj;                                                   // changé ici seulement
+  else if (!local) { if (!safe) { refreshPending = true; return; } next = norm(pmDB.projects[i]); }   // changé par l'équipe seulement
+  else next = window.fbSync.merge3(JSON.parse(baseJ), pmCurProj, norm(pmDB.projects[i]), true);       // des deux côtés : fusion, rien n'est retiré de l'écran
+  if (JSON.stringify(next) !== dbJ) {
+    next.modified = Date.now();
+    pmDB.projects[i] = JSON.parse(JSON.stringify(next));
+    try { pmSave(); } catch (e) { console.warn('projet : enregistrement', e); }
+    status('✓ Enregistré automatiquement', 'var(--accent)');
+  }
+  if (next === pmCurProj) baseJ = JSON.stringify(norm(pmDB.projects[i]));
+  else if (safe) { pmCurProj = JSON.parse(JSON.stringify(next)); baseJ = JSON.stringify(norm(pmDB.projects[i])); refresh(); }
+  else refreshPending = true;                       // l'écran garde sa version (cohérente) ; on refusionnera dès que possible
+}
+function refresh() {
+  refreshPending = false;
+  const y = window.scrollY;
+  try { pmRenderProjectForm(); } catch (e) { console.warn('projet : affichage', e); }
+  window.scrollTo(0, y);
+  status('↻ Mis à jour avec les changements de l\'équipe', 'var(--accent2)');
+}
+function soon(ms) {
+  if (!editing()) return;
+  clearTimeout(timer); timer = setTimeout(persist, ms || 1200);
+}
+function afterOpen() {
+  if (typeof pmCurProj === 'undefined' || !pmCurProj || !pmCurProj.id) { openId = null; baseJ = null; return; }
+  openId = pmCurProj.id; baseJ = JSON.stringify(pmCurProj); refreshPending = false;
+}
+// Libellé d'état à côté de « Sauvegarder » (avant : « Édition »)
+function decorateHeader() {
+  const e = ed(), hd = e && e.firstElementChild; if (!hd) return;
+  const lab = [...hd.querySelectorAll('span')].find(s => /^(Édition|Nouveau projet|✓ |● |↻ )/.test(s.textContent.trim()) || s.id === 'pm-autosave');
+  if (!lab) return;
+  if (pmCurProj && pmCurProj.id) { lab.id = 'pm-autosave'; lab.textContent = '✓ Enregistrement automatique'; }
+  else lab.textContent = 'Nouveau projet : « Sauvegarder » pour le créer';
+}
+
+const wrapFn = (name, mk) => { const o = window[name]; if (typeof o === 'function') window[name] = mk(o); };
+wrapFn('pmEditProject', o => function () { persist(); const r = o.apply(this, arguments); afterOpen(); return r; });
+wrapFn('pmNewProject', o => function () { persist(); openId = null; baseJ = null; return o.apply(this, arguments); });
+wrapFn('pmProjTab', o => function (tab) { if (tab === 'list') persist(); return o.apply(this, arguments); });
+wrapFn('pmGo', o => function () { persist(); return o.apply(this, arguments); });
+wrapFn('switchApp', o => function () { persist(); return o.apply(this, arguments); });
+wrapFn('pmSaveProject', o => function () { persist(); const r = o.apply(this, arguments); if (pmCurProj && pmCurProj.id && ed() && ed().style.display !== 'none') afterOpen(); else { openId = null; baseJ = null; } return r; });
+wrapFn('pmRenderProjectForm', o => function () { const r = o.apply(this, arguments); decorateHeader(); return r; });
+window.pmMsPersist = function () { persist(); };     // commentaires de jalon : même enregistrement (avec fusion)
+window.pmOnTeamUpdate = function () { if (editing()) persist(); };   // appelé par la synchro quand pm_db change
+
+// Toute action dans l'app pendant l'édition → enregistrement 1,2 s après la dernière
+['input', 'change', 'click'].forEach(t => document.addEventListener(t, () => { if (editing()) soon(); }, true));
+document.addEventListener('focusout', () => { if (refreshPending) soon(300); }, true);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') persist(); });
+window.addEventListener('pagehide', persist);
+window.pmAutosave = { persist, state: () => ({ openId, pending: refreshPending, hasBase: baseJ !== null }) };   // tests, dépannage
 })();
 </script>
 <!-- ═══ VUE TÉLÉPHONE (V3) ═══ -->
 <script>
 /* ═════════════════════════════════════════════════════════════════════════
-   VUE TÉLÉPHONE — barre d'onglets en bas, barre de titre + pages en « puces »,
+   VUE TÉLÉPHONE — barre d'onglets en bas, barre de titre (pages de l'app : menu ☰),
    listes en cartes, fenêtres qui montent du bas, rien qui dépasse de l'écran.
    Couche greffée : tout le CSS est limité aux écrans ≤ 768 px ; sur ordinateur
    rien ne change. Le code des apps n'est pas modifié (enveloppes + observateurs).
@@ -11602,7 +11800,7 @@ const css = document.createElement('style');
 css.id = 'm-style';
 css.textContent = `
 :root{--m-tab:58px;--m-hd:54px}
-#m-tabbar,#m-sync,.m-subnav{display:none}
+#m-tabbar,#m-sync{display:none}
 @media (max-width:768px){
   html{touch-action:manipulation}
   body{-webkit-tap-highlight-color:transparent;overscroll-behavior-y:none}
@@ -11629,12 +11827,7 @@ css.textContent = `
   #m-sync{display:flex;position:fixed;top:calc(${SAFE_T} + 8px);right:8px;width:38px;height:38px;z-index:115;align-items:center;justify-content:center;border-radius:12px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer;padding:0}
   .sidebar{top:0!important;padding-top:${SAFE_T};padding-bottom:calc(${SAFE_B} + 8px);overflow-y:auto;border-radius:0 18px 18px 0}
 
-  /* Pages de l'app : puces qui défilent sous le titre */
-  .m-subnav{display:flex;gap:8px;overflow-x:auto;padding:8px 12px;position:sticky;top:calc(var(--m-hd) + ${SAFE_T});z-index:109;background:color-mix(in srgb,var(--bg) 88%,transparent);${BLUR};border-bottom:1px solid var(--border);scrollbar-width:none}
-  .m-subnav::-webkit-scrollbar{display:none}
-  .m-chip{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:999px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);font:600 13px 'DM Sans',sans-serif;white-space:nowrap;cursor:pointer}
-  .m-chip.on{background:var(--accent);border-color:var(--accent);color:#04120e}
-  .m-cbd{min-width:17px;height:17px;border-radius:9px;background:var(--danger);color:#fff;font:700 10px 'DM Mono',monospace;display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
+  /* (V7) plus de rangée de puces sous le titre : les pages de chaque app sont dans le menu ☰ */
 
   /* Barre d'onglets */
   #m-tabbar{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:130;height:calc(var(--m-tab) + ${SAFE_B});padding-bottom:${SAFE_B};background:color-mix(in srgb,var(--surface) 88%,transparent);${BLUR};border-top:1px solid var(--border)}
@@ -11646,7 +11839,7 @@ css.textContent = `
   .m-bd.on{display:flex}
 
   /* Messages : au-dessus de la barre d'onglets */
-  .toast{left:12px;right:12px;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px);justify-content:center}
+  .toast{left:12px;right:12px;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px);justify-content:center;pointer-events:none}   /* caché, il descend sur la barre d'onglets : il ne doit pas capter les touches (V7) */
   #fb-banner{top:auto!important;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px)!important}
   #fb-pop{top:calc(${SAFE_T} + 52px)!important;left:auto!important;right:8px!important}
 
@@ -11685,6 +11878,29 @@ css.textContent = `
   [id^="pm-docs-"] > div{grid-template-columns:repeat(2,minmax(0,1fr))!important;padding-bottom:10px;border-bottom:1px solid var(--border)}
   .bc-nums[style*="repeat(5,1fr)"]{grid-template-columns:repeat(3,minmax(0,1fr))!important;row-gap:10px}
   [data-supnew]{white-space:normal;text-align:left}
+  /* Projets › Outils & Suivi, vue « Transformer » : jalons en lignes (colonne fixe à gauche), outils en
+     colonnes groupés par pack (en-tête fixe en haut) — V7 */
+  .pmx-wrap{overflow:auto;max-height:calc(100dvh - var(--m-hd) - var(--m-tab) - 24px);border:1px solid var(--border);border-radius:10px;background:var(--surface);overscroll-behavior:contain}
+  .pmx{border-collapse:separate;border-spacing:0;min-width:0;width:max-content}   /* pas la largeur mini des tableaux (640 px) : colonnes à leur taille */
+  .pmx th,.pmx td{border-right:1px solid var(--border);border-bottom:1px solid var(--border);padding:0;width:76px;min-width:76px;max-width:76px;height:40px;text-align:center;font:500 11px 'DM Mono',monospace;color:var(--text);background:var(--surface);position:relative;text-transform:none;letter-spacing:0;white-space:normal}
+  .pmx thead th{position:sticky;background:var(--surface2);z-index:2}
+  .pmx thead tr:first-child th{top:0;height:26px}
+  .pmx thead tr:nth-child(2) th{top:26px}
+  .pmx th.pmx-g{text-align:left;padding:0 8px;font:700 11px 'DM Sans',sans-serif;color:var(--accent2);white-space:nowrap;overflow:clip;width:auto;max-width:none}   /* clip (pas hidden) : sinon le nom « collant » se cale sur la case */
+  .pmx th.pmx-g b{display:inline-block;position:sticky;left:104px;font-weight:700}   /* nom du pack visible en défilant */
+  .pmx th.pmx-g span{color:var(--muted);font-weight:500;margin-left:4px}
+  .pmx th.pmx-t{height:auto;padding:5px 5px 4px;vertical-align:top;border-top:3px solid var(--accent);font:600 10.5px/1.25 'DM Sans',sans-serif;text-align:left}
+  .pmx th.pmx-t > div{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;cursor:pointer}
+  .pmx th.pmx-t.sub{font-weight:500;color:var(--dim)}
+  .pmx-x{margin-top:3px;font:600 10px 'DM Sans',sans-serif;color:var(--accent2);background:none;border:1px solid var(--border);border-radius:6px;padding:1px 5px;cursor:pointer}
+  .pmx .pmx-l{position:sticky;left:0;z-index:1;width:96px;min-width:96px;max-width:96px;text-align:left;padding:2px 8px;font:600 11px/1.2 'DM Sans',sans-serif;color:var(--text);background:var(--surface2);word-break:break-word}
+  .pmx thead th.pmx-l{z-index:3;top:0;vertical-align:bottom;padding-bottom:6px;color:var(--muted);font-size:10px;font-weight:600}
+  .pmx td{cursor:pointer}
+  .pmx td.pmx-none{background:repeating-linear-gradient(45deg,transparent 0 5px,rgba(120,130,150,.10) 5px 10px);cursor:default}
+  .pmx-c{position:absolute;top:1px;right:2px;font:600 8.5px 'DM Sans',sans-serif;color:var(--danger)}
+  .pmx-leg{display:flex;flex-wrap:wrap;gap:5px 12px;margin-top:8px;font-size:11px;color:var(--muted)}
+  .pmx-leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+  .pmx-empty{color:var(--muted);font-size:12px;padding:10px;text-align:center;border:1px dashed var(--border);border-radius:8px}
 
   /* Nouvel achat : les boutons restent en bas de l'écran */
   body[data-app="achats"][data-ach="nouveau"] #page-nouveau .btn-actions{position:fixed;left:0;right:0;bottom:calc(var(--m-tab) + ${SAFE_B});z-index:120;flex-wrap:nowrap;overflow-x:auto;padding:10px 12px;background:color-mix(in srgb,var(--surface) 92%,transparent);${BLUR};border-top:1px solid var(--border)}
@@ -11753,39 +11969,6 @@ function syncApp() {
 }
 const toTop = () => { if (MQ.matches) window.scrollTo(0, 0); };
 
-// ─── PUCES : les pages de chaque app (copie de la navigation de sa barre latérale) ──
-function buildChips(app) {
-  const side = $('sidebar-' + app), main = $('main-' + app);
-  const top = main && main.querySelector('.topbar');
-  if (!side || !top) return;
-  let nav = main.querySelector('.m-subnav');
-  if (!nav) {
-    nav = document.createElement('div'); nav.className = 'm-subnav'; nav.setAttribute('role', 'tablist');
-    top.after(nav);
-    nav.addEventListener('click', e => {
-      const b = e.target.closest('.m-chip'); if (!b || !nav._items) return;
-      const it = nav._items[+b.dataset.i]; if (!it) return;
-      it.click(); toTop();
-    });
-  }
-  const items = [...side.querySelectorAll('nav .nav-item')];
-  nav._items = items;
-  nav.innerHTML = items.map((it, i) => {
-    const label = [...it.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
-    const cnt = ((it.querySelector('.xa-navcount') || {}).textContent || '').trim();
-    return '<button type="button" role="tab" class="m-chip' + (it.classList.contains('active') ? ' on' : '') + '" data-i="' + i + '">' + esc(label) + (cnt && cnt !== '0' ? '<span class="m-cbd">' + esc(cnt) + '</span>' : '') + '</button>';
-  }).join('');
-  const on = nav.querySelector('.m-chip.on');
-  if (on) nav.scrollLeft = Math.max(0, on.offsetLeft - (nav.clientWidth - on.offsetWidth) / 2);
-}
-function watchChips(app) {
-  const side = $('sidebar-' + app), navEl = side && side.querySelector('nav');
-  if (!navEl) return;
-  let t = 0;
-  new MutationObserver(() => { cancelAnimationFrame(t); t = requestAnimationFrame(() => buildChips(app)); })
-    .observe(navEl, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
-  buildChips(app);
-}
 
 // ─── LISTES EN CARTES : chaque cellule reçoit le titre de sa colonne ─────────
 const CARDS = [
@@ -11842,6 +12025,43 @@ function setThemeColor() {
   if (m) try { m.setAttribute('content', getComputedStyle(document.body).backgroundColor); } catch (e) {}
 }
 
+// ─── PROJETS › OUTILS & SUIVI, vue « Transformer » sur téléphone (V7) ──────
+// Le tableau d'origine (un outil par ligne, un jalon par colonne) obligeait à défiler dans tous les sens
+// en perdant les noms. Ici : les jalons à gauche (colonne fixe), les outils en haut sous le nom de leur
+// pack (en-tête fixe). Touchez une case : fenêtre du jalon (pmOpenMsPopup) ; un nom : l'outil.
+function toolsMatrix() {
+  const P = pmCurProj, tools = P.tools || [], packs = P.toolPacks || [];
+  pmFixMsLabels(tools);
+  if (!tools.length) return '<div class="pmx-empty">Aucun outil. Ajoutez des outils ou des packs.</div>';
+  const rows = [], add = o => (o.milestones || []).forEach(m => { if (m.label && !rows.includes(m.label)) rows.push(m.label); });
+  tools.forEach(t => { add(t); (t.subtools || []).forEach(add); });
+  rows.sort((a, b) => { const ia = PM_MILESTONES.indexOf(a), ib = PM_MILESTONES.indexOf(b); return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib); });
+  const cols = (t, i) => [{ o: t, ctx: 't:' + i, i, si: -1 }].concat(t._bomOpen ? (t.subtools || []).map((s, si) => ({ o: s, ctx: 's:' + i + ':' + si, i, si })) : []);
+  const groups = packs.map(pk => ({ title: pk.title || 'Pack sans nom', cols: tools.flatMap((t, i) => t.packId === pk.id ? cols(t, i) : []) })).filter(g => g.cols.length);
+  const free = tools.flatMap((t, i) => packs.some(pk => pk.id === t.packId) ? [] : cols(t, i));   // y compris un pack disparu
+  if (free.length) groups.push({ title: 'Outils hors pack', cols: free });
+  const all = groups.flatMap(g => g.cols);
+  const stc = s => s === 'Bloqué' ? 'var(--danger)' : s === 'Terminé' ? 'var(--muted)' : 'var(--accent)';
+  const head1 = groups.map(g => '<th class="pmx-g" colspan="' + g.cols.length + '"><b>📦 ' + esc(g.title) + '<span>' + g.cols.filter(c => c.si < 0).length + '</span></b></th>').join('');
+  const head2 = all.map(c => {
+    const t = c.o, open = c.si < 0 ? 'pmEditTool(' + c.i + ')' : 'pmEditTool(' + c.i + ');pmToolSubTab=\'sous\';pmEditSubtool(' + c.si + ')';
+    const sub = c.si < 0 && (t.subtools || []).length ? '<button type="button" class="pmx-x" onclick="pmToggleToolExpand(' + c.i + ')">' + (t._bomOpen ? '▾ ' : '▸ ') + t.subtools.length + '</button>' : '';
+    return '<th class="pmx-t' + (c.si >= 0 ? ' sub' : '') + '" style="border-top-color:' + stc(t.status) + '"><div onclick="' + open + '" title="' + esc(t.name || '') + '">' + (c.si >= 0 ? '↳ ' : '') + esc(t.name || 'Sans nom') + '</div>' + sub + '</th>';
+  }).join('');
+  const body = rows.map(lbl => '<tr><th class="pmx-l" scope="row">' + esc(lbl) + '</th>' + all.map(c => {
+    const ms = c.o.milestones || [], mi = ms.findIndex(m => m.label === lbl);
+    if (mi < 0) return '<td class="pmx-none"></td>';
+    const m = ms[mi], k = pmMsColor(m), nc = (m.comments || []).length;
+    const txt = m.date ? m.date.slice(8, 10) + '/' + m.date.slice(5, 7) : (m.status === 'N-A' ? 'N-A' : '—');
+    return '<td onclick="pmOpenMsPopup(\'' + c.ctx + '\',' + mi + ')" style="background:' + k.bg + ';box-shadow:inset 0 -3px 0 ' + k.border + '" title="' + esc(lbl + ' · ' + k.label) + '">' + txt + (nc ? '<span class="pmx-c">💬' + nc + '</span>' : '') + '</td>';
+  }).join('') + '</tr>').join('');
+  const leg = [['var(--accent)', 'Fait'], ['var(--danger)', 'En retard'], ['var(--accent3)', '≤ 7 jours'], ['#5a6478', 'À faire'], ['var(--muted)', 'Annulé']]
+    .map(([c, t]) => '<span><i style="background:' + c + '"></i>' + t + '</span>').join('') + '<span>💬 commentaires</span>';
+  return '<div class="pmx-wrap"><table class="pmx"><thead><tr><th class="pmx-l" rowspan="2">Jalon \\ Outil</th>' + head1 + '</tr><tr>' + head2 + '</tr></thead><tbody>' +
+    (body || '<tr><th class="pmx-l">—</th><td colspan="' + all.length + '" style="font-family:\'DM Sans\',sans-serif;color:var(--muted)">Aucun jalon</td></tr>') +
+    '</tbody></table></div><div class="pmx-leg">' + leg + '</div>';
+}
+
 // ─── BRANCHEMENT ───────────────────────────────────────────────────────────
 const wrap = (name, mk) => { const o = window[name]; if (typeof o === 'function') window[name] = mk(o); };
 function init() {
@@ -11859,6 +12079,12 @@ function init() {
   wrap('pmGo', o => function (v) { const r = o.apply(this, arguments); last.projects = v; return r; });
   ['engProjTab', 'engLibTab', 'engAccTab', 'pmProjTab'].forEach(n => wrap(n, o => function () { const r = o.apply(this, arguments); toTop(); return r; }));
   wrap('pmSetTheme', o => function () { const r = o.apply(this, arguments); setThemeColor(); return r; });
+  // Outils & Suivi : sur téléphone la vue « Transformer » devient la grille jalons × outils (V7)
+  wrap('pmRenderToolsBom', o => function () { return MQ.matches ? toolsMatrix() : o.apply(this, arguments); });
+  let fromGrid = false;   // outil ouvert depuis la grille : « Retour » y ramène (et pas aux cartes)
+  wrap('pmEditTool', o => function () { fromGrid = MQ.matches && pmToolsView === 'bom'; return o.apply(this, arguments); });
+  wrap('pmCloseTool', o => function () { if (fromGrid) { pmToolsView = 'bom'; fromGrid = false; } return o.apply(this, arguments); });
+  MQ.addEventListener('change', () => { try { if (pmToolsView === 'bom' && pmEditingTool === null && $('pm-tools')) pmRenderTools(); } catch (e) {} });
 
   bar.addEventListener('click', e => {
     const b = e.target.closest('.m-tab'); if (!b) return;
@@ -11874,7 +12100,8 @@ function init() {
     window.scrollTo(0, 0);
   });
 
-  ['achats', 'engineering', 'projects'].forEach(watchChips);
+  // Page choisie dans le menu ☰ (seule navigation des pages depuis V7) : on repart du haut
+  document.querySelectorAll('.sidebar nav').forEach(n => n.addEventListener('click', e => { if (e.target.closest('.nav-item')) setTimeout(toTop, 0); }));
   watchCards();
   mirrorBadge('home', $('hp-rail-dot'));
   mirrorBadge('achats', $('xa-nc-liv'));
