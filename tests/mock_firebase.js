@@ -34,9 +34,11 @@
       };
     }
   };
+  // window.__mockStorageFail = true : Storage refuse les envois (règles Storage fermées)
+  const denied = () => { const e = new Error('Firebase Storage: User does not have permission. (storage/unauthorized)'); e.code = 'storage/unauthorized'; return e; };
   const ref = path => ({
-    putString: async d => be('put', { path, data: d }),
-    put: async (blob, meta) => { const d = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); }); return be('put', { path, data: d, meta }); },
+    putString: async d => { if (window.__mockStorageFail) throw denied(); return be('put', { path, data: d }); },
+    put: async (blob, meta) => { if (window.__mockStorageFail) throw denied(); const d = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); }); return be('put', { path, data: d, meta }); },
     getDownloadURL: async () => { const r = await be('url', { path }); if (!r) { const e = new Error('not found'); e.code = 'storage/object-not-found'; throw e; } return r; }
   });
   const fs = () => db; fs.FieldValue = { serverTimestamp: () => 'TS' };

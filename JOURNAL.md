@@ -42,6 +42,11 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V2 : la restauration d'un fichier plateforme (ZIP) est entièrement couverte par la question « envoyer à l'équipe ? » : `wrapZipLoad` (l. 10996) enveloppe la version la plus externe de `loadPlatformZip`. Raison : trouvé à la lecture complète — la couche Achats+ (l. 9603-9626) écrit les extras, les fournisseurs et `suivi_autosave` après la fin de `__platformLoading` ; ces données partaient à l'équipe sans confirmation. Test 12 : échoue sans la correction (2 échecs), passe avec.
 - 2026-11-12, V2 : réception d'un changement d'un autre poste (`reconcile`, l. 10812) : si l'utilisateur modifie la même base pendant le téléchargement d'une image, la réception recommence avec la version locale à jour (3 essais) au lieu de l'écraser ; l'état commun (`fb_base`) n'est mis à jour qu'après application. Raison : trouvé à la relecture ; une saisie faite pendant l'attente pouvait être perdue.
 - 2026-11-12, V2 : à savoir — une image reçue sans réglage CORS du bucket reste affichée par son lien https ; l'export Word ignore alors cette image (engDataUrlToUint8 attend une data URL, l. 4470, erreur captée l. 4609). Une pièce jointe non téléchargée affiche « Fichier introuvable dans ce navigateur » (l. 9365).
+- 2026-11-12, V4 : les pièces jointes partent dans Storage (`app/files/<id>`) dès l'ajout, y compris pour un achat neuf pas encore sauvegardé (avant : seulement à la sauvegarde puis à la synchro), et une seule fois. À côté de chaque fichier : « ☁ en ligne », « ⏳ envoi… », « ⚠ non envoyé » (l'infobulle donne l'erreur, nouvel essai automatique), « sur ce poste » (non connecté) ou « absent de ce poste » (non connecté et fichier absent de l'appareil). Raison : demande de l'utilisateur (le fichier doit être dans la base dès l'ajout), avec confirmation visible. Remplace, pour les pièces jointes, l'envoi « à la sauvegarde » de la ligne V2.
+- 2026-11-12, V4 : un fichier refusé par Storage ne bloque plus que son propre enregistrement (avant : un seul envoi raté laissait toute la base « en attente », rien ne partait). Les autres enregistrements se synchronisent ; le ☁ passe au rouge avec la raison (« Fichier non envoyé (storage/unauthorized) : vérifiez les règles Storage… ») ; nouvel essai toutes les 30 s ou par « Synchroniser ». Raison : un problème Storage ne doit pas arrêter la synchro de tous les autres achats.
+- 2026-11-12, V4 : une pièce jointe absente de ce poste s'ouvre depuis sa copie en ligne (lien de téléchargement Storage) au lieu de « Fichier introuvable dans ce navigateur ». Raison : le téléchargement automatique vers les autres postes exige le CORS du bucket et peut échouer ; l'ouverture par le lien marche toujours. Remplace le message de la ligne V2 ci-dessus.
+- 2026-11-12, V4 : **un fichier retiré d'un achat garde sa copie dans Storage** (comme en V2) : un autre poste peut encore la référencer. Nettoyage à la main dans la console Firebase si besoin (voir À faire).
+- 2026-11-12, V4 : réglages Firebase à connaître. Les règles Storage doivent autoriser l'écriture aux membres de l'équipe (règles posées en V2) ; sinon : « ⚠ non envoyé » / `storage/unauthorized`. Pour qu'un autre poste garde une copie locale des pièces jointes (et les mette dans sa sauvegarde .zip), le bucket Storage doit avoir le CORS ; sans lui, les fichiers s'ouvrent quand même depuis leur copie en ligne.
 
 ## 2. Achats
 - 2026-11-12, V1 : état de départ. Types CAPEX, OPEX, « Costumer » (orthographe d'origine, à ne pas corriger sans vérifier les données existantes). CAPEX et Costumer exigent un budget et des lignes (immos ou lignes client) (validation l. 2021+). Liste paginée par 15, import/export CSV.
@@ -51,11 +56,15 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V3 : correction téléphone : le formulaire « Nouvel achat » restait sur 3 colonnes étroites, car les champs « pleine largeur » (`.fg.s3`) créaient des colonnes implicites dans la grille à 1 colonne ; règle `.fg.s2,.fg.s3{grid-column:1/-1}`. Raison : Date, Projet et Référence étaient écrasés sur une même ligne.
 - 2026-11-12, V3 : sur téléphone, page « Nouvel achat » : boutons Sauvegarder / Nouveau / Supprimer collés au-dessus de la barre d'onglets ; cartes de chiffres masquées sur cette page ; boutons de la barre de titre (doublons) masqués. Raison : le bouton Sauvegarder était en bas d'un long formulaire.
 
+- 2026-11-12, V4 : formulaire d'achat : la note sous les pièces jointes devient « Envoyés en ligne dès l'ajout : toute l'équipe peut les ouvrir. Une copie reste sur ce poste (sauvegarde .zip). » quand on est connecté, ou « Sur ce poste pour l'instant : ils partiront en ligne une fois connecté (☁)… » sinon. Ouvert comme fichier (file://) : texte d'origine conservé, aucun état affiché. Raison : l'utilisateur lisait « Stockés dans ce navigateur et inclus dans la sauvegarde .zip. » et voulait le fichier en base dès l'ajout.
+- 2026-11-12, V4 : badge « ● Non sauvegardé » masqué tant qu'on est connecté à l'équipe. Il signifie « pas exporté en CSV / pas de fichier lié » ; une fois connecté les données sont sauvegardées en ligne, c'était une fausse alerte.
+
 ## 3. Budget
 - 2026-11-12, V1 : état de départ. Page Budget Follow Up : cartes, tableau dépliable 2 niveaux (budget → immo → achats), export Excel. Onglet Budget aussi dans la fiche projet de Project Master (l. 8824).
 
 ## 4. Achats+ (workflow, livraisons, fournisseurs)
 - 2026-11-12, V1 : état de départ. Module greffé sans modifier l'app Achats (l. 9100-9756) : workflow d'approbation, page Livraisons, page Fournisseurs avec historique de prix, pièces jointes, traçabilité créé/modifié par.
+- 2026-11-12, V4 : **dépendance** : l'affichage de l'état des pièces jointes (couche Firebase, sujet 1) dépend d'Achats+ (`xaRenderBox`, vers l. 9256-9324) : le texte exact de la note « Stockés dans ce navigateur et inclus dans la sauvegarde .zip. » ; les lignes `.xa-file` dans le même ordre que les pièces jointes ; les éléments `[data-xa="open"]` et `.xa-file-s` ; `window.getForm().attachments`. Si Achats+ change l'un de ces points, vérifier l'affichage de l'état des pièces jointes (test_sync section 13). Raison : la couche Firebase est greffée, elle repère ces éléments plutôt que de modifier Achats+.
 
 ## 5. Engineering
 - 2026-11-12, V1 : état de départ. Projets, bibliothèque de solutions (import JSON), réception, entreprises, paramètres, éditeur riche avec images redimensionnables, mode opératoire (bibliothèque d'opérations). Lien vers les projets et produits de Project Master (l. 3897).
@@ -92,6 +101,7 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V3 : revenir sur un onglet rouvre la dernière page vue dans cette app ; toucher l'onglet actif remonte en haut ; un changement de page remonte en haut (téléphone seulement).
 - 2026-11-12, V3 : balise viewport avec `viewport-fit=cover` et balise `theme-color` (l. 58, sur la même ligne pour ne pas décaler les numéros de ligne du journal) ; marges de sécurité des iPhone (`env(safe-area-inset-*)`) ; la couleur de la barre du navigateur suit le thème clair ou sombre.
 - 2026-11-12, V3 : **ne jamais casser l'affichage ordinateur en modifiant la vue téléphone** : tout le CSS de la couche est dans `@media (max-width:768px)`. Vérifié : 12 écrans ordinateur (1440 × 900) identiques au pixel près à la V2.
+- 2026-11-12, V4 : téléphone (≤ 768 px) : l'état de chaque pièce jointe passe sur une seconde ligne sous le nom du fichier. Raison : à 320 px le nom était coupé à 3 lettres. Lignes de pièces jointes vérifiées à 320, 390 et 1440 px : rien ne dépasse.
 - 2026-11-12, V3 : à savoir : le planning (Gantt) garde sa colonne de noms de 380 px (l. 9834) ; sur téléphone on fait défiler. Les tableaux Livraisons et Fournisseurs défilent sur le côté (pas en cartes).
 
 ## 11. Tests et méthode
@@ -111,6 +121,9 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - 2026-11-12, V3 : `node tests/test_sync.js` : 53/53. Correction d'une course dans le test : la connexion pouvait partir avant le chargement du faux SDK ; vue en lançant les tests en parallèle.
 - 2026-11-12, V3 : affichage ordinateur comparé à la V2 sur 12 écrans (1440 × 900) : identique au pixel près.
 - 2026-11-12, V3 : avant publication, tout ce qui a changé depuis la V2 a été relu (l. 58 et l. 11150-11450), comme le prévoit CLAUDE.md. Copie : `versions/v3.html`.
+- 2026-11-12, V4 : `node tests/test_sync.js` : 71 vérifications (53 avant). Nouvelle section 13 « Pièces jointes » : envoi à l'ajout, pour un achat existant et pour un achat neuf non sauvegardé, une seule fois ; Storage qui refuse les envois : les autres achats se synchronisent, l'achat bloqué attend puis part quand Storage revient ; un autre poste ouvre un fichier absent depuis sa copie en ligne ; badge masqué ; texte de la note quand le compte n'est pas autorisé. `tests/mock_firebase.js` a un nouveau drapeau `window.__mockStorageFail = true` qui simule des règles Storage fermées. Les nouvelles vérifications lancées sur `versions/v3.html` échouent comme prévu : elles détectent bien le changement.
+- 2026-11-12, V4 : `node tests/test_mobile.js` : 63/63 sur iPhone 13, iPhone SE et Pixel 7. Affichage ordinateur : 12/12 écrans identiques au pixel près à la V3 (les changements ne touchent que le bloc des pièces jointes et le badge masqué). Lignes de pièces jointes à 320, 390 et 1440 px : rien ne dépasse.
+- 2026-11-12, V4 : `plateforme.html` fait maintenant environ 11 540 lignes. Copie : `versions/v4.html`.
 
 ## 12. À faire
 - Question : quels tests faire à chaque version (navigateur, téléphone, données d'exemple) ? → en place en V3 : test_sync, test_mobile sur 3 tailles de téléphone, comparaison de l'affichage ordinateur avec la version précédente.
@@ -122,10 +135,11 @@ l. 9100-9756 · Planning et rapport l. 9758-10205 · Statistiques, Reports, harm
 - En cours (utilisateur) : régler le CORS du bucket Storage (une commande dans Cloud Shell) pour que les images reçues redeviennent des data URL ; sans cela elles s'affichent par leur lien (l'export Word des images venues d'un autre poste peut alors les manquer).
 - En cours (utilisateur) : premier essai réel de connexion Google et de synchro sur deux postes.
 - À corriger plus tard : sur téléphone, la page fait 634 px de large au lieu de la largeur de l'écran (déjà en V1). → corrigé en V3 (2026-11-12).
-- Plus tard : les fichiers effacés (pièces jointes, images) restent dans Storage (pas de nettoyage).
+- Plus tard : les fichiers effacés (pièces jointes, images) restent dans Storage (pas de nettoyage). Confirmé en V4 pour les pièces jointes retirées d'un achat.
+- En cours (utilisateur) : essayer la V4 : ajouter une pièce jointe à un achat et vérifier « ☁ en ligne », puis l'ouvrir depuis un second poste.
 - En cours (utilisateur) : activer GitHub Pages (Settings › Pages › Deploy from a branch › branche `ccr-fcfbd0a0-m1mkvy`, dossier `/ (root)`) ; puis dans Firebase › Authentication › Settings › Authorized domains, ajouter `ytyoussef123.github.io`.
 - En cours (utilisateur) : régler le CORS du bucket avec l'origine `https://ytyoussef123.github.io` (en plus de localhost).
-- Plus tard : en cas de pièce jointe absente localement, proposer de l'ouvrir par son lien Storage au lieu de « Fichier introuvable ».
+- Plus tard : en cas de pièce jointe absente localement, proposer de l'ouvrir par son lien Storage au lieu de « Fichier introuvable ». → fait en V4 (2026-11-12).
 - En cours (utilisateur) : essayer la V3 sur son téléphone (sur iPhone avec encoche : vérifier les marges en haut et en bas).
 - Prochaine étape proposée : installation comme une app (icône sur l'écran d'accueil, plein écran : manifeste + icônes).
 - Plus tard : planning (Gantt) sur téléphone (colonne des noms de 380 px).

@@ -10735,33 +10735,31 @@ async function pushKey(k) {
       !confirm('Attention : cette modification supprime ' + removed.length + ' enregistrement(s) sur ' + nb + ' (' + k + ') pour TOUTE l\'équipe.\n\nOK : supprimer pour tout le monde.\nAnnuler : reprendre les données de l\'équipe sur ce poste.')) {
     await resetFromRemote([k]); return;
   }
-  // 1. Images nouvelles → Storage (avant le document qui les cite)
-  const need = new Set();
-  changed.forEach(id => { for (const m of loc[id].j.matchAll(RX_TOK)) need.add(m[1]); });
-  for (const hh of need) {
-    if (up['i:' + hh]) continue;
-    const d = found[hh] || await cacheGet(hh);
-    if (!d || !d.startsWith('data:')) continue;           // image venue d'un autre poste : déjà sur le serveur
-    await st.ref('app/img/' + hh).putString(d, 'data_url');
-    up['i:' + hh] = 1; saveUp(); cachePut(hh, d);
-  }
-  // 2. Pièces jointes des achats → Storage
-  if (k === 'suivi_autosave') {
-    for (const id of changed) {
-      let rec; try { rec = JSON.parse(loc[id].j); } catch (e) { continue; }
-      for (const a of (rec && rec.attachments) || []) {
-        if (!a || !a.id || up['f:' + a.id]) continue;
-        const f = await fileGet(a.id);
-        if (!f || !f.blob) continue;
-        await st.ref('app/files/' + a.id).put(f.blob, { contentType: f.type || a.type || 'application/octet-stream', customMetadata: { name: String(f.name || a.name || '') } });
-        up['f:' + a.id] = 1; saveUp();
+  // 1. Fichiers d'abord (images, pièces jointes des achats), enregistrement par enregistrement : si un
+  //    fichier est refusé, cet enregistrement attend le prochain essai ; les autres partent quand même.
+  const blocked = new Set(); let fileErr = null;
+  for (const id of changed) {
+    try {
+      for (const m of loc[id].j.matchAll(RX_TOK)) {
+        const hh = m[1];
+        if (up['i:' + hh]) continue;
+        const d = found[hh] || await cacheGet(hh);
+        if (!d || !d.startsWith('data:')) continue;           // image venue d'un autre poste : déjà sur le serveur
+        await st.ref('app/img/' + hh).putString(d, 'data_url');
+        up['i:' + hh] = 1; saveUp(); cachePut(hh, d);
       }
-    }
+      if (k === 'suivi_autosave') {
+        let rec = null; try { rec = JSON.parse(loc[id].j); } catch (e) {}
+        for (const a of (rec && rec.attachments) || []) if (a && a.id && !up['f:' + a.id]) await uploadFile(a.id, a);
+      }
+    } catch (e) { blocked.add(id); fileErr = e; }
   }
-  // 3. Documents Firestore, par lots
+  const send = changed.filter(id => !blocked.has(id));
+  if (!send.length && !removed.length) { fileFailed(fileErr); return; }
+  // 2. Documents Firestore, par lots
   const ops = [], by = (user && user.email) || '';
   const ts = firebase.firestore.FieldValue.serverTimestamp();
-  for (const id of changed) {
+  for (const id of send) {
     const j = loc[id].j, n = Math.max(1, Math.ceil(j.length / CHUNK)), v = rnd();
     ops.push({ id, data: { j: j.slice(0, CHUNK), n, o: loc[id].o, v, t: ts, by } });
     for (let i = 1; i < n; i++) ops.push({ id: id + '~' + i, data: { j: j.slice(i * CHUNK, (i + 1) * CHUNK), of: id, i, v } });
@@ -10779,12 +10777,14 @@ async function pushKey(k) {
   if (cnt) commits.push(batch.commit());
   // Le serveur confirmera plus tard (hors ligne : file d'attente gardée par Firestore). On avance tout de suite.
   const prev = {};
-  changed.forEach(id => { prev[id] = b[id]; b[id] = loc[id].h; const n = Math.max(1, Math.ceil(loc[id].j.length / CHUNK)); if (n > 1) np[id] = n; else delete np[id]; });
+  send.forEach(id => { prev[id] = b[id]; b[id] = loc[id].h; const n = Math.max(1, Math.ceil(loc[id].j.length / CHUNK)); if (n > 1) np[id] = n; else delete np[id]; });
   removed.forEach(id => { prev[id] = b[id]; delete b[id]; delete np[id]; });
-  saveBase(); dirty.delete(k); saveDirty();
+  if (!blocked.size) dirty.delete(k);   // enregistrements bloqués par un fichier : la base reste « à envoyer »
+  saveBase(); saveDirty();
+  if (blocked.size) fileFailed(fileErr);
   Promise.all(commits).catch(e => {
     console.error('fb commit', k, e);
-    [...changed, ...removed].forEach(id => { if (b[id] === (loc[id] && loc[id].h) || !(id in b)) { if (prev[id] === undefined) delete b[id]; else b[id] = prev[id]; } });
+    [...send, ...removed].forEach(id => { if (b[id] === (loc[id] && loc[id].h) || !(id in b)) { if (prev[id] === undefined) delete b[id]; else b[id] = prev[id]; } });
     saveBase(); dirty.add(k); saveDirty();
     setState('error', e && e.code === 'permission-denied' ? 'Écriture refusée par le serveur (droits ?)' : (e && e.message));
   });
@@ -10853,11 +10853,85 @@ async function pullFiles() {
       try {
         const url = await st.ref('app/files/' + a.id).getDownloadURL();
         const blob = await (await fetch(url)).blob();
-        await filePut(a.id, { blob, name: a.name, type: a.type || blob.type }); up['f:' + a.id] = 1;
+        await filePut(a.id, { blob, name: a.name, type: a.type || blob.type }); up['f:' + a.id] = 1; localHave.set(a.id, true);
       } catch (e) { /* réessayé plus tard */ }
     }
     saveUp();
   } finally { pulling = false; }
+}
+
+// ─── PIÈCES JOINTES : envoi dès l'ajout, état affiché à côté de chaque fichier ──
+const upBusy = new Map(), upFail = new Map(), localHave = new Map();   // id → envoi en cours / erreur / fichier présent sur ce poste
+function uploadFile(id, meta) {
+  if (up['f:' + id]) return Promise.resolve();
+  if (upBusy.has(id)) return upBusy.get(id);
+  const p = (async () => {
+    const f = await fileGet(id);
+    localHave.set(id, !!(f && f.blob));
+    if (!f || !f.blob || !st) return;                      // fichier d'un autre poste : il est déjà en ligne
+    try {
+      await st.ref('app/files/' + id).put(f.blob, { contentType: f.type || (meta && meta.type) || 'application/octet-stream', customMetadata: { name: String(f.name || (meta && meta.name) || '') } });
+      up['f:' + id] = 1; saveUp(); upFail.delete(id);
+    } catch (e) { upFail.set(id, (e && (e.code || e.message)) || 'erreur'); throw e; }
+  })();
+  upBusy.set(id, p);
+  p.finally(() => { upBusy.delete(id); decorateSoon(); }).catch(() => {});
+  decorateSoon();
+  return p;
+}
+function fileFailed(e) {
+  const c = (e && (e.code || e.message)) || 'erreur';
+  setState('error', 'Fichier non envoyé (' + c + ')' + (/unauthorized|403/.test(c) ? ' : vérifiez les règles Storage' : '') + '. L\'enregistrement concerné attend ; nouvel essai automatique.');
+}
+// Pièces jointes du formulaire d'achat, dans l'ordre affiché (getForm de la couche Achats+ les recopie)
+function formAtts() { try { return (window.getForm && window.getForm().attachments) || []; } catch (e) { return []; } }
+let decT = null;
+function decorateSoon() { clearTimeout(decT); decT = setTimeout(() => { decorate().catch(e => console.warn('fb pj', e)); }, 80); }
+const NOTE0 = 'Stockés dans ce navigateur et inclus dans la sauvegarde .zip.';   // texte d'origine (Achats+)
+async function decorate() {
+  const box = $('xa-box'); if (!box) return;
+  const fileMode = state === 'file';   // app ouverte comme fichier : rien en ligne, affichage d'origine
+  box.querySelectorAll('.xa-note').forEach(n => {
+    if (!n.dataset.fbNote && n.textContent !== NOTE0) return;
+    n.dataset.fbNote = '1';
+    n.textContent = ready ? 'Envoyés en ligne dès l\'ajout : toute l\'équipe peut les ouvrir. Une copie reste sur ce poste (sauvegarde .zip).'
+      : fileMode ? NOTE0
+      : 'Sur ce poste pour l\'instant : ils partiront en ligne une fois connecté (☁). Inclus dans la sauvegarde .zip.';
+  });
+  if (fileMode) { box.querySelectorAll('.fb-att').forEach(s => s.remove()); return; }
+  const rows = [...box.querySelectorAll('.xa-file')], atts = formAtts();
+  for (let i = 0; i < rows.length; i++) {
+    const a = atts[i]; if (!a || !a.id) continue;
+    const f = await fileGet(a.id), local = !!(f && f.blob);   // relu à chaque fois : le clic « ouvrir » s'appuie dessus
+    localHave.set(a.id, local);
+    if (ready && local && !up['f:' + a.id] && !upBusy.has(a.id) && !upFail.has(a.id)) uploadFile(a.id, a).catch(() => {});
+    let txt, col, tip = '';
+    if (up['f:' + a.id] || (!local && ready)) { txt = '☁ en ligne'; col = 'var(--accent)'; tip = 'Enregistré en ligne : l\'équipe peut l\'ouvrir'; }
+    else if (!local) { txt = 'absent de ce poste'; col = 'var(--muted)'; tip = 'Connectez-vous avec ☁ pour l\'ouvrir depuis sa copie en ligne'; }
+    else if (upBusy.has(a.id)) { txt = '⏳ envoi…'; col = 'var(--accent2)'; }
+    else if (upFail.has(a.id)) { txt = '⚠ non envoyé'; col = 'var(--danger)'; tip = 'Erreur : ' + upFail.get(a.id) + ' — nouvel essai automatique'; }
+    else { txt = 'sur ce poste'; col = 'var(--warn)'; tip = 'Connectez-vous avec ☁ pour l\'envoyer en ligne'; }
+    const row = rows[i];
+    let s = row.querySelector('.fb-att');
+    if (!s) { s = document.createElement('span'); s.className = 'fb-att'; row.insertBefore(s, row.querySelector('.xa-file-s')); }
+    s.textContent = txt; s.style.color = col; s.title = tip;
+  }
+}
+// Formulaire d'achat : suivre les pièces jointes ; ouvrir depuis Storage un fichier absent de ce poste
+function wireAttachments() {
+  const box = $('xa-box'); if (!box) return;
+  new MutationObserver(decorateSoon).observe(box, { childList: true });   // Achats+ redessine le bloc à chaque changement
+  box.addEventListener('click', e => {
+    const b = e.target.closest('[data-xa="open"]'); if (!b || !st || !ready) return;
+    const a = formAtts()[+b.dataset.i];
+    if (!a || !a.id || localHave.get(a.id) !== false) return;   // fichier présent sur ce poste : ouverture habituelle
+    e.preventDefault(); e.stopPropagation();
+    const w = window.open('', '_blank');                          // ouvert tout de suite (sinon bloqué comme fenêtre surgissante)
+    st.ref('app/files/' + a.id).getDownloadURL()
+      .then(u => { if (w) w.location.href = u; else window.location.href = u; })
+      .catch(() => { if (w) w.close(); if (typeof toast === 'function') toast('✕', 'Fichier introuvable en ligne', 'var(--danger)'); });
+  }, true);
+  decorateSoon();
 }
 
 // ─── PREMIÈRE SYNCHRO SUR CE POSTE : fusionner ou remplacer ───────────────
@@ -11005,6 +11079,7 @@ function wrapZipLoad() {
 async function start() {
   wrapZipLoad();
   injectUI();
+  wireAttachments();
   if (location.protocol === 'file:') { setState('file'); return; }
   setState('init');
   try {
@@ -11020,7 +11095,10 @@ async function start() {
   firebase.auth().onAuthStateChanged(u => onUser(u));
   window.addEventListener('online', () => { if (user && !ready) onUser(user); else if (dirty.size) schedule(); else setState('ok'); });
   window.addEventListener('offline', () => setState('offline'));
-  setInterval(() => { if (ready && dirty.size) schedule(); }, 30000);
+  setInterval(() => {
+    if (ready && dirty.size) schedule();
+    if (ready && upFail.size) { upFail.clear(); decorateSoon(); }   // pièces jointes refusées : nouvel essai
+  }, 30000);
 }
 
 // ─── AFFICHAGE ─────────────────────────────────────────────────────────────
@@ -11084,6 +11162,8 @@ const LABEL = {
 };
 function setState(s, msg) {
   state = s; stateMsg = msg || '';
+  document.body.classList.toggle('fb-on', !!ready);   // connecté à l'équipe : le badge « Non sauvegardé » (fichier CSV) n'a plus de sens
+  decorateSoon();
   const btn = $('fb-btn'); if (!btn) return;
   const L = LABEL[s] || LABEL.init;
   btn.style.color = L[1];
@@ -11119,6 +11199,10 @@ function injectUI() {
     '.fb-dlg{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:20px;max-width:440px;font-size:13px;line-height:1.5}.fb-dlg h3{margin:0 0 10px;font-size:15px}.fb-dlg p{margin:0 0 10px}' +
     '#fb-banner{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9000;background:var(--surface);color:var(--text);border:1px solid var(--accent);border-radius:10px;padding:8px 10px 8px 14px;display:none;align-items:center;gap:10px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.3);max-width:calc(100vw - 32px)}' +
     '#fb-banner.on{display:flex}.fb-x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px}' +
+    // Pièces jointes : état « en ligne » à côté de chaque fichier. Connecté, tout part en ligne : le badge « Non sauvegardé » (export CSV) est masqué
+    '.fb-att{font-size:10.5px;font-weight:600;white-space:nowrap;flex-shrink:0}body.fb-on #unsavedBadge{display:none!important}' +
+    // Téléphone : l'état passe sous le nom du fichier (sinon le nom serait coupé à quelques lettres)
+    '@media(max-width:768px){.xa-file{flex-wrap:wrap}.fb-att{order:9;flex-basis:100%;padding-left:24px;margin-top:-4px}}' +
     // Téléphone : la page est plus large que l'écran, les boutons du bas de la barre sortaient de l'écran
     '@media(max-width:768px){.app-rail-footer{margin-left:6px!important}#fb-pop{left:8px;right:auto;width:300px;max-width:calc(100% - 16px);top:64px;bottom:auto}#fb-banner{top:62px}}';
   document.head.appendChild(css);
@@ -11144,7 +11228,7 @@ function injectUI() {
 document.addEventListener('DOMContentLoaded', start);
 
 // Pour les tests et le dépannage (console)
-window.fbSync = { state: () => state, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS };
+window.fbSync = { state: () => state, msg: () => stateMsg, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS };
 })();
 </script>
 <!-- ═══ VUE TÉLÉPHONE (V3) ═══ -->

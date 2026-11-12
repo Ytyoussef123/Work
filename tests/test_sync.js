@@ -238,6 +238,79 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
     check('ZIP accepté : B reçoit les fournisseurs du ZIP', !!((await getLS(B, 'hp_suppliers')) || {}).ZIPF);
   }
 
+  console.log('13. Pièces jointes : en ligne dès l\'ajout, état affiché, un fichier refusé ne bloque pas le reste');
+  const pdf = (name, txt) => ({ name, mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 ' + txt) });
+  const attTxt = (p, i) => p.evaluate(i => { const r = document.querySelectorAll('#xa-box .xa-file')[i || 0], s = r && r.querySelector('.fb-att'); return s ? s.textContent : null; }, i);
+  async function waitAtt(p, txt, i, ms = 8000) { const t = Date.now(); let s; while (Date.now() - t < ms) { s = await attTxt(p, i); if (s === txt) return true; await sleep(100); } return s; }
+  async function waitFor(fn, ms = 8000) { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await sleep(150); } return false; }
+  const idb = (p, op, id) => p.evaluate(([op, id]) => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => { const t = r.result.transaction('files', op === 'has' ? 'readonly' : 'readwrite'), s = t.objectStore('files'); if (op === 'has') { const q = s.get(id); q.onsuccess = () => res(!!(q.result && q.result.blob)); } else { s.delete(id); t.oncomplete = () => res(true); } }; }), [op, id]);
+  const recB = async id => ((await getLS(B, 'suivi_autosave')) || []).find(p => p.id === id) || {};
+  await A.evaluate(() => { purchases.push({ id: 'IDPJ1', line: 91, projet: 'P1', description: 'Achat PJ 1', puHT: 3, quantite: 1, capexOpex: 'OPEX', attachments: [] }, { id: 'IDPJ2', line: 92, projet: 'P2', description: 'Achat PJ 2', puHT: 4, quantite: 1, capexOpex: 'OPEX', attachments: [] }); autosave(); });
+  await settle(A, B);
+  // a) achat existant
+  await A.evaluate(() => { switchApp('achats'); editRow('IDPJ1'); });
+  await sleep(300);
+  await A.setInputFiles('#xa-box input[data-xa-up]', pdf('devis.pdf', 'devis'));
+  let r = await waitAtt(A, '☁ en ligne');
+  check('achat existant : « ☁ en ligne » à côté du fichier', r === true, r);
+  const id1 = await A.evaluate(() => ((purchases.find(p => p.id === 'IDPJ1').attachments || [])[0] || {}).id);
+  check('achat existant : fichier dans Storage', !!id1 && files.has('app/files/' + id1), id1);
+  check('note « envoyés en ligne dès l\'ajout »', /en ligne dès l'ajout/.test(await A.evaluate(() => document.getElementById('xa-box').textContent)));
+  await settle(A, B);
+  check('B reçoit la fiche et le fichier', ((await recB('IDPJ1')).attachments || []).some(a => a.id === id1) && await idb(B, 'has', id1));
+  // b) nouvel achat, pas encore sauvegardé
+  const puts1 = stats.puts;
+  await A.evaluate(() => { resetForm(); goTo('nouveau'); });
+  await sleep(300);
+  await A.setInputFiles('#xa-box input[data-xa-up]', pdf('offre.pdf', 'offre'));
+  r = await waitAtt(A, '☁ en ligne');
+  const id2 = await A.evaluate(() => (getForm().attachments[0] || {}).id);
+  check('nouvel achat pas encore sauvegardé : fichier déjà en ligne', r === true && !!id2 && files.has('app/files/' + id2), [r, id2]);
+  await A.evaluate(() => {
+    const s = (id, v) => { document.getElementById(id).value = v; };
+    s('f-type', 'OPEX'); onTypeChange();
+    s('f-fourn', [...document.getElementById('f-fourn').options].find(o => o.value).value);
+    s('f-pu', '7'); s('f-da', 'DA-PJ'); s('f-qty', '1'); s('f-dmigo', '2026-11-01');
+    saveEntry();
+  });
+  await settle(A, B);
+  const nb2 = ((await getLS(B, 'suivi_autosave')) || []).find(p => (p.attachments || []).some(a => a.id === id2));
+  check('nouvel achat sauvegardé : B le reçoit avec son fichier', !!nb2 && await idb(B, 'has', id2));
+  check('fichier envoyé une seule fois', stats.puts - puts1 === 1, stats.puts - puts1);
+  // c) Storage refuse les envois (règles Storage fermées)
+  await A.evaluate(() => { window.__mockStorageFail = true; editRow('IDPJ2'); });
+  await sleep(300);
+  await A.setInputFiles('#xa-box input[data-xa-up]', pdf('facture.pdf', 'facture'));
+  r = await waitAtt(A, '⚠ non envoyé');
+  check('Storage refuse : « ⚠ non envoyé » à côté du fichier', r === true, r);
+  check('Storage refuse : ☁ en erreur avec le motif', await waitFor(() => A.evaluate(() => fbSync.state() === 'error' && /règles Storage/.test(fbSync.msg ? fbSync.msg() : ''))), await A.evaluate(() => fbSync.state()));
+  const id3 = await A.evaluate(() => ((purchases.find(p => p.id === 'IDPJ2').attachments || [])[0] || {}).id);
+  await A.evaluate(() => { purchases.find(p => p.id === 'IDPJ1').observations = 'pendant la panne'; autosave(); });
+  check('Storage refuse : les autres achats partent quand même', await waitFor(async () => (await recB('IDPJ1')).observations === 'pendant la panne'));
+  check('Storage refuse : l\'achat concerné attend', !((await recB('IDPJ2')).attachments || []).length && (await A.evaluate(() => fbSync.dirty())).includes('suivi_autosave'));
+  // d) Storage rétabli : « Synchroniser » (ou l'essai automatique toutes les 30 s)
+  await A.evaluate(() => { window.__mockStorageFail = false; document.getElementById('fb-btn').click(); document.querySelector('#fb-pop [data-a="now"]').click(); });
+  await settle(A, B);
+  check('Storage rétabli : fichier envoyé, B reçoit l\'achat', !!id3 && files.has('app/files/' + id3) && ((await recB('IDPJ2')).attachments || []).some(a => a.id === id3));
+  check('Storage rétabli : « synchronisé »', (await A.evaluate(() => fbSync.state())) === 'ok', await A.evaluate(() => fbSync.state()));
+  r = await waitAtt(A, '☁ en ligne');
+  check('Storage rétabli : « ☁ en ligne » à côté du fichier', r === true, r);
+  // e) B : fichier absent de ce poste → ouvert depuis sa copie en ligne
+  await idb(B, 'del', id1);
+  await B.evaluate(() => { switchApp('achats'); editRow('IDPJ1'); });
+  r = await waitAtt(B, '☁ en ligne');
+  check('B : fichier absent du poste marqué « ☁ en ligne »', r === true, r);
+  const reqs = [], onReq = q => reqs.push(q.url());
+  B.context().on('request', onReq);
+  const [tab] = await Promise.all([B.context().waitForEvent('page', { timeout: 8000 }).catch(() => null), B.click('#xa-box .xa-file-n')]);
+  const opened = await waitFor(async () => reqs.some(u => u.startsWith('https://firebasestorage.googleapis.com/') && u.includes(encodeURIComponent('app/files/' + id1))));
+  B.context().off('request', onReq);
+  check('B : ouvert depuis sa copie en ligne (pas « introuvable »)', opened, reqs);
+  if (tab) await tab.close().catch(() => {});
+  // f) badge « Non sauvegardé » (export CSV) et note quand on n'est pas connecté
+  check('connecté : badge « Non sauvegardé » masqué', await A.evaluate(() => document.body.classList.contains('fb-on') && getComputedStyle(document.getElementById('unsavedBadge')).display === 'none'));
+  check('compte non autorisé : note « sur ce poste pour l\'instant »', await D.evaluate(() => !document.body.classList.contains('fb-on') && /Sur ce poste pour l'instant/.test(document.getElementById('xa-box').textContent)));
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();
