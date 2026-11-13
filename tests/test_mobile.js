@@ -371,6 +371,25 @@ const MEASURE = `(() => {
     return h > 175 && h <= innerHeight * 0.56 && l === 'none' || { h, l, max: innerHeight * 0.55 };
   }));
   await page.evaluate(() => document.getElementById('ms-popup-ov').remove());
+  // ─── V13 : plusieurs fichiers dans une ligne de la Documentation Engineering ; menu « ↗ Ouvrir » ───
+  await page.evaluate(() => {
+    switchApp('projects'); pmEditProject('Pp1'); pmShowTab('produits'); pmEditProduct(0); pmProductSubTab('doceng');
+    const d = pmCurProj.products[0].docs[0]; delete d.file;
+    d.files = [{ id: 'Fm1', name: 'C1185572.CATDrawing_Sheet_1.pdf', size: 742000, type: 'application/pdf' }, { id: 'Fm2', name: 'C1185572.CATDrawing_Sheet_2_(Detail).pdf', size: 3100000, type: 'application/pdf' }];
+    const box = document.getElementById('pm-docs-0'); box.innerHTML = pmDocsHtml(0); box.scrollIntoView({ block: 'center' });
+  });
+  await page.waitForTimeout(200);
+  await chk('documentation : deux fichiers dans une même ligne, l\'un sous l\'autre, dans la largeur de l\'écran', () => page.evaluate(() => {
+    const l = [...document.querySelectorAll('#pm-docs-0 > div:first-child .pm-docf')].map(e => e.getBoundingClientRect());
+    return l.length === 2 && l[1].top >= l[0].bottom - 1 && l.every(r => r.left >= 0 && r.right <= innerWidth) && document.documentElement.scrollWidth <= innerWidth || { n: l.length, sw: document.documentElement.scrollWidth };
+  }));
+  await tap('#pm-docs-0 button[onclick="pmOpenDocLink(0,0)"]');
+  await chk('« ↗ Ouvrir » : le menu des fichiers tient dans l\'écran, lignes assez hautes pour le doigt', () => page.evaluate(() => {
+    const m = document.getElementById('pm-docmenu'), r = m && m.getBoundingClientRect(), h = m ? [...m.querySelectorAll('button')].map(x => x.getBoundingClientRect().height) : [];
+    return !!m && m.querySelectorAll('button[data-k]').length === 2 && h.every(v => v >= 40) && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight || { m: !!m, r: r && [r.left, r.right, r.top, r.bottom], h };   // 2 fichiers (+ le lien de la ligne s'il y en a un)
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'doc_fichiers.png') });
+  await page.keyboard.press('Escape');
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

@@ -6840,7 +6840,7 @@ function pmDocsHtml(pi) {
     <input type="text" id="pm-doclink-${pi}-${di}" value="${pmEsc(d.link)}" placeholder="Lien / hyperlien" oninput="pmCurProj.products[${pi}].docs[${di}].link=this.value" style="min-width:0;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:11px">
     <button class="btn bb btn-sm" title="Ouvrir le fichier chargé (logiciel du poste), sinon le lien" onclick="pmOpenDocLink(${pi},${di})" style="white-space:nowrap">↗ Ouvrir</button>
     <button class="btn bp btn-sm" title="Charger le fichier dans l'app (en ligne pour l'équipe) ; copie aussi dans le dossier du produit du PC s'il est lié" onclick="pmDocUpload(${pi},${di})" style="white-space:nowrap">⬆ Charger</button>
-    <button class="set-del" onclick="pmCurProj.products[${pi}].docs.splice(${di},1);document.getElementById('pm-docs-${pi}').innerHTML=pmDocsHtml(${pi})">✕</button>${d.file && typeof window.pmDocFileHtml === 'function' ? window.pmDocFileHtml(pi, di, d.file) : ''}
+    <button class="set-del" onclick="if(window.pmDocDelete)pmDocDelete(${pi},${di});else{pmCurProj.products[${pi}].docs.splice(${di},1);document.getElementById('pm-docs-${pi}').innerHTML=pmDocsHtml(${pi})}">✕</button>${typeof window.pmDocFilesHtml === 'function' ? window.pmDocFilesHtml(pi, di, d) : ''}
   </div>`).join('');
 }
 // Type de document → sous-dossier produit (4- PRODUCTS / N- Produit / …)
@@ -9693,7 +9693,7 @@ function patchZip() {
     zip.file('purchasing_extras.json', JSON.stringify({ version: 1, extras, suppliers: SUP() }, null, 2));
     const folder = zip.folder('attachments');
     const budgets = (typeof S !== 'undefined' && S && S.budgets) || [];   // + documents des budgets (V5)
-    for (const a of [...P(), ...budgets].flatMap(o => o.attachments || []).concat(((typeof pmInited !== 'undefined' && pmInited ? pmDB : (() => { try { return JSON.parse(localStorage.getItem('pm_db') || '{}'); } catch (e) { return {}; } })()).projects || []).flatMap(p => (p.products || []).flatMap(pr => (pr.docs || []).map(d => d && d.file).filter(Boolean))))) {   // + documentation produit (V11)
+    for (const a of [...P(), ...budgets].flatMap(o => o.attachments || []).concat(((typeof pmInited !== 'undefined' && pmInited ? pmDB : (() => { try { return JSON.parse(localStorage.getItem('pm_db') || '{}'); } catch (e) { return {}; } })()).projects || []).flatMap(p => (p.products || []).flatMap(pr => (pr.docs || []).flatMap(d => d ? (Array.isArray(d.files) ? d.files : []).concat(d.file || []) : []).filter(f => f && f.id))))) {   // + documentation produit (V11 ; tous les fichiers d'une ligne : V13)
       try { const r = await fGet(a.id); if (r) folder.file(a.id + '__' + a.name.replace(/[\\/:*?"<>|]/g, '_'), r.blob); } catch (e) { }
     }
     return zip.generateAsync({ type: 'blob' });
@@ -10913,9 +10913,9 @@ async function pushKey(k) {
         await st.ref('app/img/' + hh).putString(d, 'data_url');
         up['i:' + hh] = 1; saveUp(); cachePut(hh, d);
       }
-      if (k === 'suivi_autosave' || (k === 'suivi_settings' && id.startsWith('budgets:')) || (k === 'pm_db' && id.startsWith('projects:'))) {   // achats, documents des budgets (V5), fichiers de la documentation produit (V11)
+      if (k === 'suivi_autosave' || (k === 'suivi_settings' && id.startsWith('budgets:')) || (k === 'pm_db' && id.startsWith('projects:'))) {   // achats, documents des budgets (V5), fichiers de la documentation produit (V11 ; plusieurs par ligne : V13)
         let rec = null; try { rec = JSON.parse(loc[id].j); } catch (e) {}
-        for (const a of ((rec && rec.attachments) || []).concat(((rec && rec.products) || []).flatMap(pr => ((pr && pr.docs) || []).map(d => d && d.file).filter(Boolean)))) if (a && a.id && !up['f:' + a.id]) await uploadFile(a.id, a);
+        for (const a of ((rec && rec.attachments) || []).concat(((rec && rec.products) || []).flatMap(pr => ((pr && pr.docs) || []).flatMap(d => d ? (Array.isArray(d.files) ? d.files : []).concat(d.file || []) : []).filter(Boolean)))) if (a && a.id && !up['f:' + a.id]) await uploadFile(a.id, a);
       }
     } catch (e) { blocked.add(id); fileErr = e; }
   }
@@ -11017,7 +11017,7 @@ async function reconcile(k, ids, tries) {
 function allAtts() {
   const out = [];
   for (const p of (parseLocal('suivi_autosave') || [])) out.push(...((p && p.attachments) || []));
-  for (const b of ((parseLocal('suivi_settings') || {}).budgets || [])) out.push(...((b && b.attachments) || [])); for (const p of ((parseLocal('pm_db') || {}).projects || [])) for (const pr of (p && p.products) || []) for (const d of (pr && pr.docs) || []) if (d && d.file) out.push(d.file);   // + documentation produit (V11)
+  for (const b of ((parseLocal('suivi_settings') || {}).budgets || [])) out.push(...((b && b.attachments) || [])); for (const p of ((parseLocal('pm_db') || {}).projects || [])) for (const pr of (p && p.products) || []) for (const d of (pr && pr.docs) || []) if (d) out.push(...(Array.isArray(d.files) ? d.files : []).concat(d.file || []).filter(a => a && a.id));   // + documentation produit (V11 ; tous les fichiers d'une ligne : V13)
   return out;
 }
 let pulling = false, pullAgain = false;
@@ -12480,7 +12480,7 @@ async function apply(z, items) {
   // la synchro les envoie avec l'enregistrement
   const want = new Set(), fileIds = l => l.forEach(a => { if (a && a.id && z.files[a.id]) want.add(a.id); });
   [...by('ach:achats'), ...by('ach:budgets')].forEach(it => fileIds(it.zip.attachments || []));
-  by('pm:projects').forEach(it => (it.zip.products || []).forEach(pr => fileIds((pr.docs || []).map(d => d && d.file))));
+  by('pm:projects').forEach(it => (it.zip.products || []).forEach(pr => fileIds((pr.docs || []).flatMap(d => d ? (Array.isArray(d.files) ? d.files : []).concat(d.file || []) : []))));   // V13 : tous les fichiers d'une ligne
   for (const id of want) { const { f, name } = z.files[id]; try { const b = await f.async('blob'); await filePut(id, { blob: b, name, type: b.type }); } catch (e) { console.warn('Fichier du ZIP', id, e); } }
   if (todo.some(it => it.base === 'pm')) {
     if (typeof pmInit === 'function' && !pmInited) pmInit();
@@ -12654,8 +12654,9 @@ window.zipImport = { readZip, itemsOf, withDeps, apply, canon };
 //    type de fichier », il s'ouvre dans le logiciel du poste (Acrobat…), comme dans SAP. Fichier seulement en ligne :
 //    il est marqué « à télécharger sous ce nom » (Content-Disposition, aussi posé à l'envoi par la synchro) puis ouvert.
 // 2) Project Master › produit › Documentation Engineering : « ⬆ Charger » met le fichier dans l'app (IndexedDB
-//    hp_files ; la synchro l'envoie en ligne comme une pièce jointe) : doc.file = {id, name, size, type, at} ;
-//    « ↗ Ouvrir » ouvre ce fichier, sinon le lien. Copie dans le dossier du produit du PC si un dossier y est déjà lié.
+//    hp_files ; la synchro l'envoie en ligne comme une pièce jointe). V13 : PLUSIEURS fichiers par ligne,
+//    doc.files = [{id, name, size, type, at}, …] (l'ancien doc.file, un seul fichier (V11-V12), est toujours lu) ;
+//    « ↗ Ouvrir » ouvre le fichier (plusieurs : petit menu), sinon le lien. Copie dans le dossier du produit du PC s'il est lié.
 // 3) Engineering › projet : les documents chargés (ou liés) du produit Project Master choisi, ouverts d'un clic.
 // ═══════════════════════════════════════════════════════════════════════════
 (function () {
@@ -12720,23 +12721,36 @@ function pdfTip(name, type) {
 }
 Object.assign(window, { attSave, attOpen, attOpenRemote, attDispo });
 
-// ─── 2) Documentation Engineering du produit : le fichier dans l'app ───
+// ─── 2) Documentation Engineering du produit : les fichiers dans l'app (V13 : plusieurs par ligne) ───
 const DOCFILE = /^[^\/\\:]+\.(pdf|dwg|dxf|stp|step|igs|iges|x_t|jt|catpart|catproduct|catdrawing|sldprt|sldasm|slddrw|prt|asm|drw|xlsx?|xlsm|docx?|pptx?|png|jpe?g|tiff?|zip|txt|csv)$/i;   // un simple nom de fichier (ancien « Charger » : rangé dans le dossier du PC)
 const docOf = (pi, di) => { try { return pmCurProj.products[pi].docs[di]; } catch (e) { return null; } };
 const renderDocs = pi => { const b = document.getElementById('pm-docs-' + pi); if (b) b.innerHTML = pmDocsHtml(pi); };
 const persist = () => { try { if (window.pmAutosave) pmAutosave.persist(); } catch (e) {} };
+// Fichiers d'une ligne (V13 : plusieurs) : doc.files, plus l'ancien doc.file (V11-V12, un seul) s'il est encore là
+const filesOf = d => { const l = (d && Array.isArray(d.files) ? d.files : []).filter(f => f && f.id); return d && d.file && d.file.id && !l.some(f => f.id === d.file.id) ? [d.file].concat(l) : l; };
+const setFiles = (d, l) => { delete d.file; if (l.length) d.files = l; else delete d.files; };   // l'ancien doc.file passe dans doc.files
+const fileIn = (d, fid) => { const l = filesOf(d); return fid == null ? l[0] : l.find(f => f.id === fid); };
+const jsArg = s => esc(JSON.stringify(String(s)));   // texte passé dans un onclick="…"
+window.pmDocFiles = filesOf;
 window.pmDocFileHtml = (pi, di, f) => {
   let on = false; try { on = !!JSON.parse(localStorage.getItem('fb_up') || '{}')['f:' + f.id]; } catch (e) {}
   const [txt, col, tip] = on ? ['☁ en ligne', 'var(--accent)', 'Enregistré en ligne : l\'équipe peut l\'ouvrir'] : signedIn() ? ['⏳ envoi…', 'var(--accent2)', 'Envoi en ligne en cours'] : ['sur ce poste', 'var(--warn)', 'Connectez-vous avec ☁ pour l\'envoyer en ligne'];
-  return '<div class="pm-docf"><span>📄</span><span class="pm-docf-n" title="Ouvrir « ' + esc(f.name) + ' » (logiciel du poste)" onclick="pmDocOpenFile(' + pi + ',' + di + ')">' + esc(f.name) + '</span>' +
+  return '<div class="pm-docf"><span>📄</span><span class="pm-docf-n" title="Ouvrir « ' + esc(f.name) + ' » (logiciel du poste)" onclick="pmDocOpenFile(' + pi + ',' + di + ',' + jsArg(f.id) + ')">' + esc(f.name) + '</span>' +
     '<span class="pm-docf-s">' + size(f.size || 0) + '</span><span class="pm-docf-st" style="color:' + col + '" title="' + tip + '">' + txt + '</span>' +
-    '<button class="set-del" title="Retirer le fichier de ce document" onclick="pmDocRemoveFile(' + pi + ',' + di + ')">✕</button></div>';
+    '<button class="set-del" title="Retirer ce fichier du document" onclick="pmDocRemoveFile(' + pi + ',' + di + ',' + jsArg(f.id) + ')">✕</button></div>';
 };
-window.pmDocOpenFile = (pi, di) => { const d = docOf(pi, di); if (d && d.file) attOpen(d.file); };
-window.pmDocRemoveFile = (pi, di) => {
-  const d = docOf(pi, di); if (!d || !d.file) return;
-  if (!confirm('Retirer « ' + d.file.name + ' » de ce document ?\n(Le n°, l\'owner et le lien restent.)')) return;
-  delete d.file; renderDocs(pi); persist();
+window.pmDocFilesHtml = (pi, di, d) => filesOf(d).map(f => window.pmDocFileHtml(pi, di, f)).join('');   // une ligne par fichier, sous le document
+window.pmDocOpenFile = (pi, di, fid) => { const f = fileIn(docOf(pi, di), fid); if (f) attOpen(f); };
+window.pmDocRemoveFile = (pi, di, fid) => {
+  const d = docOf(pi, di), l = filesOf(d), f = fileIn(d, fid); if (!f) return;
+  if (!confirm('Retirer « ' + f.name + ' » de ce document ?\n(Le n°, l\'owner, le lien' + (l.length > 1 ? ' et les autres fichiers' : '') + ' restent.)')) return;
+  setFiles(d, l.filter(x => x !== f)); renderDocs(pi); persist();
+};
+window.pmDocDelete = (pi, di) => {   // ✕ de la ligne : confirmation si elle a des fichiers (V13 : il peut y en avoir plusieurs)
+  const pr = pmCurProj && pmCurProj.products && pmCurProj.products[pi], d = docOf(pi, di); if (!pr || !d) return;
+  const l = filesOf(d);
+  if (l.length && !confirm('Supprimer la ligne « ' + (d.type || 'Document') + ' » et ' + (l.length > 1 ? 'ses ' + l.length + ' fichiers' : 'son fichier « ' + l[0].name + ' »') + ' ?')) return;
+  pr.docs.splice(di, 1); renderDocs(pi); persist();
 };
 // Copie dans le dossier du produit sur le PC (ancien « Charger ») : seulement si un dossier projets est déjà lié et autorisé
 async function pcCopy(pi, type, files) {
@@ -12752,23 +12766,26 @@ async function pcCopy(pi, type, files) {
     return true;
   } catch (e) { return false; }
 }
-window.pmDocUpload = function (pi, di) {
-  const pr = pmCurProj && pmCurProj.products && pmCurProj.products[pi], d = docOf(pi, di); if (!d) return;
+window.pmDocUpload = function (pi, di) {   // V13 : les fichiers choisis vont TOUS dans cette ligne (avant : une ligne de plus par fichier)
+  const d0 = docOf(pi, di); if (!d0) return;
   const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true;
   inp.onchange = async () => {
-    const all = [...inp.files], files = all.filter(f => f.size < MAX), big = all.filter(f => f.size >= MAX);
+    const all = [...inp.files], big = all.filter(f => f.size >= MAX);
+    let files = all.filter(f => f.size < MAX);
     if (big.length) toast('⚠️', big.map(f => f.name).join(', ') + ' : plus de 20 Mo, non chargé', 'var(--warn)');
     if (!files.length) return;
-    if (d.file && !confirm('Remplacer « ' + d.file.name + ' » par « ' + files[0].name + ' » ?')) return;
-    let k = di;
-    for (const [n, f] of files.entries()) {
+    const old = filesOf(docOf(pi, di) || d0), same = files.filter(f => old.some(x => x.name === f.name));   // même nom déjà dans la ligne : le remplacer ?
+    if (same.length && !confirm((same.length > 1 ? 'Déjà dans ce document : « ' + same.map(f => f.name).join(' », « ') + ' ».\nLes remplacer par les nouveaux ?' : '« ' + same[0].name + ' » est déjà dans ce document.\nLe remplacer par le nouveau ?') + '\n(Annuler : garder ' + (same.length > 1 ? 'les anciens)' : 'l\'ancien)'))) files = files.filter(f => !same.includes(f));
+    if (!files.length) return;
+    const metas = [];
+    for (const f of files) {
       const id = 'F' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
       await filePut(id, { blob: f, name: f.name, type: f.type });
-      const meta = { id, name: f.name, size: f.size, type: f.type || '', at: new Date().toISOString() };
-      if (!n) d.file = meta;
-      else pr.docs.splice(++k, 0, { type: d.type || '', number: '', owner: d.owner || '', link: '', file: meta });   // fichiers en plus : une ligne chacun, même type
+      metas.push({ id, name: f.name, size: f.size, type: f.type || '', at: new Date().toISOString() });
     }
-    renderDocs(pi); persist();
+    const d = docOf(pi, di) || d0, l = filesOf(d);   // ligne relue : le projet a pu être rafraîchi par l'équipe pendant l'écriture
+    for (const m of metas) { const i = l.findIndex(x => x.name === m.name); if (i >= 0) l[i] = m; else l.push(m); }   // même nom : remplacé à sa place ; sinon ajouté
+    setFiles(d, l); renderDocs(pi); persist();
     [2500, 7000].forEach(t => setTimeout(() => renderDocs(pi), t));   // état « ☁ en ligne » une fois envoyé
     const pc = await pcCopy(pi, d.type, files);
     toast('✓', files.length + ' fichier(s) chargé(s) dans l\'app' + (pc ? ' — copie dans le dossier du produit sur ce PC' : '') + (pmCurProj.id ? '' : ' : enregistrez le projet (💾) pour les garder'));
@@ -12784,11 +12801,37 @@ function openLink(url, fallback) {
 }
 window.pmOpenDocLink = function (pi, di) {
   const d = docOf(pi, di); if (!d) return;
-  if (d.file) return attOpen(d.file);
-  const url = (d.link || '').trim();
+  const l = filesOf(d), url = (d.link || '').trim();
+  if (l.length > 1) return docMenu(pi, di, l, url);   // plusieurs fichiers : on choisit lequel (V13)
+  if (l.length) return attOpen(l[0]);
   if (!url) { toast('⚠️', 'Aucun fichier ni lien : « ⬆ Charger » met le fichier dans l\'app, ou collez un lien', 'var(--warn)'); return; }
   openLink(url, typeof pmOpenLinkOld === 'function' ? () => pmOpenLinkOld(pi, di) : null);
 };
+// « ↗ Ouvrir » d'une ligne à plusieurs fichiers : petit menu sous le bouton, un fichier par ligne (+ le lien s'il y en a un)
+let menuOff = null;
+const closeDocMenu = () => { if (menuOff) { const f = menuOff; menuOff = null; f(); } };
+function docMenu(pi, di, l, url) {
+  closeDocMenu();
+  const btn = document.querySelector('#pm-docs-' + pi + ' button[onclick="pmOpenDocLink(' + pi + ',' + di + ')"]');
+  const m = document.createElement('div'); m.id = 'pm-docmenu'; m.setAttribute('role', 'menu');
+  m.innerHTML = '<div class="pm-docmenu-h">Ouvrir quel fichier ?</div>' +
+    l.map((f, k) => '<button type="button" role="menuitem" data-k="' + k + '" title="Ouvrir « ' + esc(f.name) + ' » (logiciel du poste)">📄<span>' + esc(f.name) + '</span><small>' + size(f.size || 0) + '</small></button>').join('') +
+    (url ? '<button type="button" role="menuitem" data-link title="Ouvrir le lien">🔗<span>' + esc(url) + '</span></button>' : '');
+  document.body.appendChild(m);
+  const r = btn ? btn.getBoundingClientRect() : { right: innerWidth - 8, top: 60, bottom: 60 }, w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.round(Math.max(8, Math.min(r.right - w, innerWidth - w - 8))) + 'px';
+  m.style.top = Math.round(r.bottom + 4 + h <= innerHeight - 8 ? r.bottom + 4 : Math.max(8, r.top - 4 - h)) + 'px';
+  const away = e => { if (!m.contains(e.target)) closeDocMenu(); }, key = e => { if (e.key === 'Escape') closeDocMenu(); };
+  m.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    closeDocMenu();
+    if (b.hasAttribute('data-link')) openLink(url, typeof pmOpenLinkOld === 'function' ? () => pmOpenLinkOld(pi, di) : null);
+    else attOpen(l[+b.dataset.k]);
+  });
+  const off = () => { m.remove(); document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', key, true); window.removeEventListener('scroll', away, true); window.removeEventListener('resize', closeDocMenu); };
+  menuOff = off;   // (le clic qui ouvre le menu est déjà passé : on écoute tout de suite)
+  document.addEventListener('pointerdown', away, true); document.addEventListener('keydown', key, true); window.addEventListener('scroll', away, true); window.addEventListener('resize', closeDocMenu);
+}
 
 // ─── 3) Engineering › projet : les documents du produit Project Master choisi ───
 const pmData = () => (typeof engPmDB === 'function' ? engPmDB() : (typeof pmDB !== 'undefined' ? pmDB : {})) || {};
@@ -12802,11 +12845,12 @@ function engRenderPmDocs() {
   const box = document.getElementById('ep-pmDocs'); if (!box) return;
   const x = engProd();
   if (!x) { box.hidden = true; box.innerHTML = ''; return; }
-  const docs = (x.pr.docs || []).map((d, di) => ({ d, di })).filter(o => o.d && (o.d.file || String(o.d.link || '').trim()));
+  const docs = (x.pr.docs || []).map((d, di) => ({ d, di, l: filesOf(d) })).filter(o => o.d && (o.l.length || String(o.d.link || '').trim()));
+  const chip = (d, di, f) => '<button type="button" class="ep-doc" data-di="' + di + '"' + (f ? ' data-f="' + esc(f.id) + '"' : '') + ' title="' + esc(f ? 'Ouvrir « ' + f.name + ' » (logiciel du poste)' : 'Ouvrir le lien ' + d.link) + '"><span>' +
+    (f ? '📄' : '🔗') + ' <b>' + esc(d.type || 'Document') + '</b>' + (d.number ? ' · N° ' + esc(d.number) : '') + '</span><small>' + esc(f ? f.name : d.link) + '</small></button>';   // V13 : un bouton par fichier
   box.hidden = false;
   box.innerHTML = '<label>📐 Plans et documents du produit <span class="ep-pmdocs-h">— Project Master › ' + esc(x.name) + ' › Documentation Engineering</span></label>' +
-    (docs.length ? '<div class="ep-pmdocs">' + docs.map(({ d, di }) => '<button type="button" class="ep-doc" data-di="' + di + '" title="' + esc(d.file ? 'Ouvrir « ' + d.file.name + ' » (logiciel du poste)' : 'Ouvrir le lien ' + d.link) + '"><span>' +
-      (d.file ? '📄' : '🔗') + ' <b>' + esc(d.type || 'Document') + '</b>' + (d.number ? ' · N° ' + esc(d.number) : '') + '</span><small>' + esc(d.file ? d.file.name : d.link) + '</small></button>').join('') + '</div>'
+    (docs.length ? '<div class="ep-pmdocs">' + docs.map(({ d, di, l }) => l.length ? l.map(f => chip(d, di, f)).join('') : chip(d, di, null)).join('') + '</div>'
       : '<div class="ep-pmdocs-0">Aucun document chargé pour ce produit. Chargez le plan dans Project Master › ' + esc(x.p.name || 'ce projet') + ' › Produits › ' + esc(x.name) + ' › Documentation Engineering (⬆ Charger).</div>');
 }
 function engDocsInit() {
@@ -12816,7 +12860,8 @@ function engDocsInit() {
   grid.after(box);
   box.addEventListener('click', e => {
     const b = e.target.closest('.ep-doc'), x = b && engProd(), d = x && (x.pr.docs || [])[+b.dataset.di]; if (!d) return;
-    if (d.file) attOpen(d.file); else openLink(String(d.link || '').trim());
+    if (b.dataset.f) { const f = fileIn(d, b.dataset.f); if (f) attOpen(f); else engRenderPmDocs(); return; }   // ce fichier-là (V13)
+    const url = String(d.link || '').trim(); if (url) openLink(url);
   });
   const wrapW = (n, mk) => { const o = window[n]; if (typeof o === 'function') window[n] = mk(o); };
   ['engFillPmSelects', 'engPickPmProject', 'engPickPmProduct'].forEach(n => wrapW(n, o => function () { const r = o.apply(this, arguments); try { engRenderPmDocs(); } catch (e) {} return r; }));
@@ -12828,6 +12873,14 @@ css.textContent = `
 .pm-docf-n:hover{text-decoration:underline}
 .pm-docf-s{flex-shrink:0;color:var(--muted);font:500 10.5px 'DM Mono',monospace}
 .pm-docf-st{flex-shrink:0;font-size:10.5px;font-weight:600;white-space:nowrap}
+.pm-docf + .pm-docf{margin-top:-6px}   /* fichiers d'une même ligne : groupés (V13) */
+#pm-docmenu{position:fixed;z-index:9800;min-width:230px;max-width:min(440px,calc(100vw - 16px));max-height:min(60vh,420px);overflow:auto;padding:6px;border:1px solid var(--border);border-radius:10px;background:var(--surface);box-shadow:0 14px 34px rgba(0,0,0,.45)}
+.pm-docmenu-h{padding:4px 8px 6px;font:600 10px 'DM Sans',sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+#pm-docmenu button{display:flex;align-items:center;gap:8px;width:100%;padding:8px 9px;border:0;border-radius:7px;background:none;color:var(--text);font:500 12px 'DM Sans',sans-serif;text-align:left;cursor:pointer}
+#pm-docmenu button:hover{background:var(--surface2)}
+#pm-docmenu button span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent2);font-weight:600}
+#pm-docmenu button small{flex-shrink:0;color:var(--muted);font:500 10.5px 'DM Mono',monospace}
+@media (max-width:768px){#pm-docmenu button{padding:12px 10px;font-size:14px}}
 #ep-pmDocs[hidden]{display:none}
 .ep-pmdocs-h{font-size:10px;color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400}
 .ep-pmdocs{display:flex;flex-wrap:wrap;gap:7px}

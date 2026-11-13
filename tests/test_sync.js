@@ -600,14 +600,15 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   const [fc] = await Promise.all([A.waitForEvent('filechooser'), A.click('#pm-docs-0 button[onclick="pmDocUpload(0,0)"]')]);
   await fc.setFiles(pdf('Plan CX735 Tank — rév. B.pdf', 'plan B'));
   await A.waitForTimeout(600);
-  const dA = await A.evaluate(() => ({ f: pmCurProj.products[0].docs[0].file, chip: (document.querySelector('#pm-docs-0 .pm-docf-n') || {}).textContent, saved: ((JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1').products[0].docs || [])[0] || {}).file, st: (document.getElementById('pm-autosave') || {}).textContent }));
+  const dA = await A.evaluate(() => { const f1 = d => d && ((d.files || [])[0] || d.file);   // V13 : doc.files (avant : doc.file)
+    return { f: f1(pmCurProj.products[0].docs[0]), chip: (document.querySelector('#pm-docs-0 .pm-docf-n') || {}).textContent, saved: f1((JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1').products[0].docs || [])[0]), st: (document.getElementById('pm-autosave') || {}).textContent }; });
   check('documentation produit : « ⬆ Charger » met le fichier dans l\'app (nom exact), affiché sous la ligne, enregistré', !!dA.f && dA.f.name === 'Plan CX735 Tank — rév. B.pdf' && dA.chip === dA.f.name && !!dA.saved && dA.saved.id === dA.f.id, dA);
   check('… enregistrement normal du projet (pas de fusion « ↻ »)', /✓/.test(dA.st || ''), dA.st);
   const [dlD] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.click('#pm-docs-0 button[onclick="pmOpenDocLink(0,0)"]')]);
   check('« ↗ Ouvrir » ouvre le fichier chargé, sous son nom exact', dlD.suggestedFilename() === 'Plan CX735 Tank — rév. B.pdf', dlD.suggestedFilename());
   await settle(A, B); await sleep(600); await settle(A, B);
-  const docB = (((await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1').products[0] || {}).docs || [])[0] || {};
-  check('le fichier part en ligne avec le projet (nom de téléchargement compris) ; l\'autre poste reçoit la ligne et son fichier', !!docB.file && docB.file.id === dA.f.id && files.has('app/files/' + dA.f.id) && /attachment/.test((fileMeta.get('app/files/' + dA.f.id) || {}).contentDisposition || ''), [docB, files.has('app/files/' + dA.f.id)]);
+  const docB = (((await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1').products[0] || {}).docs || [])[0] || {}, fB = (docB.files || [])[0] || docB.file;
+  check('le fichier part en ligne avec le projet (nom de téléchargement compris) ; l\'autre poste reçoit la ligne et son fichier', !!fB && fB.id === dA.f.id && files.has('app/files/' + dA.f.id) && /attachment/.test((fileMeta.get('app/files/' + dA.f.id) || {}).contentDisposition || ''), [docB, files.has('app/files/' + dA.f.id)]);
   const idbHas = (p, id) => p.evaluate(id => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onsuccess = () => { const q = r.result.transaction('files').objectStore('files').get(id); q.onsuccess = () => res(!!(q.result && q.result.blob)); q.onerror = () => res(false); }; r.onerror = () => res(false); }), id);
   check('… et en garde une copie sur ce poste-là', await waitFor(() => idbHas(B, dA.f.id)));
   // c) Engineering (autre poste) : les plans du produit choisi, ouverts d'un clic
@@ -626,6 +627,81 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   check('lien qui n\'est qu\'un nom de fichier (ancien « Charger ») : message clair au lieu d\'une page « https://… » cassée', /dossier du produit/.test(msg) && popups === 0, [msg, popups]);
   if (JSZIP) check('sauvegarde .zip : le fichier de la documentation produit est inclus', await A.evaluate(async id => { const z = await JSZip.loadAsync(await buildPlatformZip()); return Object.keys(z.files).some(n => n.startsWith('attachments/' + id + '__')); }, dA.f.id));
   A.context().off('page', countPop);
+
+  console.log('19. Plusieurs fichiers dans une même ligne de la Documentation Engineering (V13)');
+  await settle(A, B);
+  await A.evaluate(() => { switchApp('projects'); pmEditProject('Pp1'); pmShowTab('produits'); pmEditProduct(0); pmProductSubTab('doceng'); });
+  await A.waitForTimeout(300);
+  const ci = await A.evaluate(() => { const pr = pmCurProj.products[0]; pr.docs.push({ type: 'CAD Model', number: 'C1185572', owner: 'YT', link: '' }); document.getElementById('pm-docs-0').innerHTML = pmDocsHtml(0); return pr.docs.length - 1; });
+  await A.waitForTimeout(1500);   // l'enregistrement automatique de la ligne passe d'abord
+  const upTo = async (di, fl) => { const [c] = await Promise.all([A.waitForEvent('filechooser'), A.click('#pm-docs-0 button[onclick="pmDocUpload(0,' + di + ')"]')]); await c.setFiles(fl); await A.waitForTimeout(700); };
+  const rowA = di => A.evaluate(di => {
+    const pr = pmCurProj.products[0], d = pr.docs[di] || {}, row = document.querySelectorAll('#pm-docs-0 > div')[di];
+    const sv = ((JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1').products[0].docs || [])[di]) || {};
+    return { n: pr.docs.length, files: (d.files || []).map(f => f.name), ids: (d.files || []).map(f => f.id), old: !!d.file, lines: row ? [...row.querySelectorAll('.pm-docf-n')].map(e => e.textContent) : [], saved: (sv.files || []).map(f => f.name) };
+  }, di);
+  const S1 = 'C1185572.CATDrawing_Sheet_1.pdf', S2 = 'C1185572.CATDrawing_Sheet_2_(Detail).pdf', S3 = 'C1185572.CATDrawing_Sheet_3.pdf';
+  const n0 = (await rowA(ci)).n;
+  await upTo(ci, [pdf(S1, 'feuille 1'), pdf(S2, 'feuille 2')]);
+  const r1 = await rowA(ci);
+  check('deux PDF choisis d\'un coup : tous les deux dans LA MÊME ligne (plus de ligne en plus), affichés sous elle, enregistrés', r1.n === n0 && r1.files.join('|') === S1 + '|' + S2 && r1.lines.join('|') === r1.files.join('|') && r1.saved.join('|') === r1.files.join('|'), r1);
+  let asked = 0; const countDlg = () => asked++; A.on('dialog', countDlg);
+  await upTo(ci, pdf(S3, 'feuille 3'));
+  const r2 = await rowA(ci);
+  check('un 3e PDF chargé plus tard : ajouté à la même ligne, sans question', r2.n === n0 && r2.files.join('|') === [S1, S2, S3].join('|') && asked === 0, [r2, asked]);
+  A.__dialog = 'dismiss'; await upTo(ci, pdf(S1, 'feuille 1 rév. B')); const r3 = await rowA(ci);
+  A.__dialog = 'accept'; await upTo(ci, pdf(S1, 'feuille 1 rév. B')); const r4 = await rowA(ci);
+  A.off('dialog', countDlg);
+  check('même nom déjà dans la ligne : la question est posée ; « Annuler » garde l\'ancien, « OK » le remplace à sa place (pas de doublon)', asked === 2 && r3.ids.join() === r2.ids.join() && r4.files.join('|') === r2.files.join('|') && r4.ids[0] !== r2.ids[0] && r4.ids[1] === r2.ids[1], [asked, r3.ids, r4.ids]);
+  await A.click('#pm-docs-0 button[onclick="pmOpenDocLink(0,' + ci + ')"]');
+  const mn = await A.evaluate(() => [...document.querySelectorAll('#pm-docmenu button')].map(b => b.textContent));
+  const [dlM] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.click('#pm-docmenu button[data-k="1"]')]);
+  check('« ↗ Ouvrir » d\'une ligne à plusieurs fichiers : un menu les propose tous ; celui choisi s\'ouvre sous son nom exact', mn.length === 3 && [S1, S2, S3].every((s, k) => (mn[k] || '').includes(s)) && dlM.suggestedFilename() === S2 && !(await A.$('#pm-docmenu')), [mn, dlM.suggestedFilename()]);
+  await A.click('#pm-docs-0 button[onclick="pmOpenDocLink(0,' + ci + ')"]'); await A.keyboard.press('Escape');
+  const escOk = !(await A.$('#pm-docmenu'));
+  const [dlN] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.locator('#pm-docs-0 > div').nth(ci).locator('.pm-docf-n', { hasText: S3 }).click()]);
+  check('… Échap ferme le menu ; un clic sur le nom d\'un fichier sous la ligne ouvre CE fichier', escOk && dlN.suggestedFilename() === S3, [escOk, dlN.suggestedFilename()]);
+  await A.locator('#pm-docs-0 > div').nth(ci).locator('.pm-docf', { hasText: S3 }).locator('.set-del').click();
+  await A.waitForTimeout(300);
+  const r5 = await rowA(ci);
+  check('✕ d\'un fichier : seul ce fichier est retiré, les autres restent (enregistré)', r5.files.join('|') === S1 + '|' + S2 && r5.saved.join('|') === S1 + '|' + S2, r5);
+  // ligne d'avant la V13 : un seul fichier dans doc.file
+  const li = await A.evaluate(() => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onsuccess = () => { const tx = r.result.transaction('files', 'readwrite'); tx.objectStore('files').put({ blob: new Blob(['%PDF-1.4 ancien'], { type: 'application/pdf' }), name: 'Plan ancien V12.pdf', type: 'application/pdf' }, 'Fleg13');
+    tx.oncomplete = () => { const pr = pmCurProj.products[0]; pr.docs.push({ type: 'STEP Model', number: 'S-9', owner: '', link: '', file: { id: 'Fleg13', name: 'Plan ancien V12.pdf', size: 15, type: 'application/pdf', at: new Date().toISOString() } }); document.getElementById('pm-docs-0').innerHTML = pmDocsHtml(0); res(pr.docs.length - 1); }; }; }));
+  await A.waitForTimeout(1500);
+  const r6 = await rowA(li);
+  await upTo(li, pdf('Modèle 3D.pdf', '3d'));
+  const r7 = await rowA(li);
+  check('ligne d\'avant la V13 (un seul fichier) : affichée ; un nouveau fichier s\'ajoute à côté de l\'ancien, rien de perdu', r6.lines.join('|') === 'Plan ancien V12.pdf' && r7.files.join('|') === 'Plan ancien V12.pdf|Modèle 3D.pdf' && !r7.old && r7.lines.join('|') === r7.files.join('|'), [r6, r7]);
+  let msgDel = ''; const grab = d => { msgDel = d.message(); }; A.on('dialog', grab);
+  A.__dialog = 'dismiss'; await A.click('#pm-docs-0 > div:nth-child(' + (li + 1) + ') > button.set-del'); A.__dialog = 'accept'; A.off('dialog', grab);
+  check('✕ d\'une ligne qui a des fichiers : confirmation (« ses 2 fichiers ») ; « Annuler » la garde', /ses 2 fichiers/.test(msgDel) && (await rowA(li)).files.length === 2, msgDel);
+  await settle(A, B); await sleep(600); await settle(A, B);
+  const allIds = await A.evaluate(ix => ix.flatMap(i => (pmCurProj.products[0].docs[i].files || []).map(f => f.id)), [ci, li]);
+  const docsB2 = (((await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1').products[0] || {}).docs || []);
+  const cadB = docsB2.find(d => d.type === 'CAD Model' && d.number === 'C1185572') || {}, stepB = docsB2.find(d => d.type === 'STEP Model' && d.number === 'S-9') || {};
+  check('l\'autre poste reçoit les lignes avec TOUS leurs fichiers', (cadB.files || []).map(f => f.name).join('|') === S1 + '|' + S2 && (stepB.files || []).map(f => f.name).join('|') === 'Plan ancien V12.pdf|Modèle 3D.pdf', [cadB, stepB]);
+  check('… tous envoyés en ligne, et l\'autre poste en garde une copie', allIds.length === 4 && allIds.every(id => files.has('app/files/' + id)) && await waitFor(async () => { for (const id of allIds) if (!(await idbHas(B, id))) return false; return true; }), allIds.map(id => files.has('app/files/' + id)));
+  await B.evaluate(() => engPmDocs.render());
+  const chipsB = await B.evaluate(() => [...document.querySelectorAll('#ep-pmDocs .ep-doc')].map(b => b.textContent));
+  const [dlE2] = await Promise.all([B.waitForEvent('download', { timeout: 8000 }), B.locator('#ep-pmDocs .ep-doc', { hasText: S2 }).click()]);
+  check('Engineering : un bouton par fichier (feuille 1, feuille 2…) ; un clic ouvre ce fichier-là sous son nom exact', [S1, S2, 'Plan ancien V12.pdf', 'Modèle 3D.pdf'].every(n => chipsB.some(t => t.includes(n))) && chipsB.filter(t => /CAD Model/.test(t) && /C1185572/.test(t)).length === 2 && dlE2.suggestedFilename() === S2, [chipsB, dlE2.suggestedFilename()]);
+  if (JSZIP) {
+    check('sauvegarde .zip : tous les fichiers des lignes sont inclus', await A.evaluate(async ids => { const n = Object.keys((await JSZip.loadAsync(await buildPlatformZip())).files); return ids.every(id => n.some(x => x.startsWith('attachments/' + id + '__'))); }, allIds));
+    await A.evaluate(async ids => {   // ZIP « d'un autre poste » : le même projet sous un autre id ; les fichiers ne sont plus sur ce poste
+      const zip = await JSZip.loadAsync(await buildPlatformZip()), pm = JSON.parse(await zip.file('project_master.json').async('string'));
+      const p = JSON.parse(JSON.stringify(pm.projects.find(x => x.id === 'Pp1'))); p.id = 'PpM13'; p.name = 'Projet à plusieurs fichiers'; pm.projects.push(p);
+      zip.file('project_master.json', JSON.stringify(pm));
+      window.__zpFile = new File([await zip.generateAsync({ type: 'blob' })], 'plusieurs_fichiers.zip');
+      await Promise.all(ids.map(id => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onsuccess = () => { const tx = r.result.transaction('files', 'readwrite'); tx.objectStore('files').delete(id); tx.oncomplete = () => res(); }; })));
+    }, allIds);
+    await A.evaluate(() => { window.__zpDone = window.hpRestore({ files: [window.__zpFile], value: '' }); });
+    await A.waitForSelector('#zp-ov .zp-dlg', { timeout: 8000 });
+    const proposed = await A.locator('#zp-ov .zp-it[data-k="pm:projects|PpM13"] input').isChecked().catch(() => false);
+    await A.click('#zp-ov [data-z="ok"]'); await A.evaluate(() => window.__zpDone);
+    const back = []; for (const id of allIds) back.push(await idbHas(A, id));
+    check('chargement d\'un ZIP en choisissant (V10) : le projet pris revient avec TOUS les fichiers de ses lignes', proposed && back.every(Boolean), [proposed, back]);
+  }
 
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
