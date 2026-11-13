@@ -333,6 +333,44 @@ const MEASURE = `(() => {
     return !b.hidden && chips.length >= 1 && chips.every(c => c.getBoundingClientRect().right <= innerWidth) && document.documentElement.scrollWidth <= innerWidth || { hidden: b.hidden, n: chips.length, sw: document.documentElement.scrollWidth };
   }));
   if (SHOTS) { await page.evaluate(() => document.getElementById('ep-pmDocs').scrollIntoView({ block: 'center' })); await page.screenshot({ path: path.join(SHOTS, 'eng_plans.png') }); }
+  // ─── V12 : BOM en cartes avec libellés ; fenêtre du jalon : grande zone d'écriture ───
+  await page.evaluate(() => {
+    switchApp('projects'); pmEditProject('Pp1'); pmShowTab('produits'); pmEditProduct(0);
+    pmCurProj.products[0].bom = [
+      { id: 'tb1', ref: 'P1029491A', designation: 'RACCORD ENCLIQUETABLE 90°', type: 'CONNECTOR 2 WAYS', qty: '2', unit: 'PCE', photo: '', sub: null },
+      { id: 'tb2', ref: 'S2001455B', designation: 'SOUS-ENSEMBLE', type: 'SEMI-FINISHED', qty: '1', unit: 'PCE', photo: '', _open: true, sub: [{ id: 'tb21', ref: 'P1040022A', designation: 'TUBE PA12', type: 'TUBE', qty: '0.85', unit: 'M', photo: '', _open: true,
+        sub: [{ id: 'tb211', ref: 'P1040099C', designation: 'JOINT TORIQUE', type: 'SEAL', qty: '1000', unit: 'PCE', photo: '', sub: null }] }] }];   // 2ᵉ niveau : carte la plus étroite
+    pmProductSubTab('bom'); window.scrollTo(0, 0);
+  });
+  await chk('BOM : une carte par composant, libellés (Référence, Désignation, Type, Qté, Unité), références, types, quantités (« 1000 ») et unités entiers, même au 2ᵉ niveau ; rien ne dépasse', () => page.evaluate(() => {
+    const rows = [...document.querySelectorAll('#pm-bom-0 .pm-bomrow')], W = innerWidth;
+    const labels = [...rows[0].querySelectorAll('.bf-l')].map(l => getComputedStyle(l, '::before').content.replace(/"/g, ''));
+    const cut = rows.flatMap(r => [...r.querySelectorAll('.bf-l')].filter(l => l.dataset.l !== 'Désignation').map(l => l.querySelector('input')).filter(i => i.scrollWidth > i.clientWidth + 1).map(i => i.value));
+    const inside = rows.every(r => r.getBoundingClientRect().right <= W + 0.5), card = getComputedStyle(rows[0]);
+    return rows.length === 4 && labels.join('|') === 'Référence|Désignation|Type composant|Qté|Unité' && !cut.length && inside && parseFloat(card.borderTopLeftRadius) >= 10 && document.documentElement.scrollWidth <= W || { n: rows.length, labels, cut, inside, r: card.borderTopLeftRadius };
+  }));
+  await chk('BOM : sous-composant décalé avec une barre de couleur ; « SEMI-FINI » et ▼ en onglets sur le bord de la carte, sans toucher les libellés', () => page.evaluate(() => {
+    const rows = [...document.querySelectorAll('#pm-bom-0 .pm-bomrow')], semi = rows[1], sub = rows[2];
+    const lb = parseFloat(getComputedStyle(sub).borderLeftWidth), dx = sub.getBoundingClientRect().left - rows[0].getBoundingClientRect().left;
+    const tag = semi.querySelector('.pm-bomsemi'), tog = semi.querySelector(':scope > span:first-child');
+    const tabs = [tag, tog].map(e => e.getBoundingClientRect());   // un libellé sous un onglet : au moins 3 px d'écart
+    const clear = [...semi.querySelectorAll('.bf-l')].every(l => { const b = l.getBoundingClientRect(); return tabs.every(t => t.right <= b.left || t.left >= b.right || t.bottom <= b.top - 3); });
+    return lb >= 3 && dx > 0 && !!tag && getComputedStyle(tag).position === 'absolute' && getComputedStyle(tog).position === 'absolute' && clear || { lb, dx, tag: !!tag, clear };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'bom_cartes.png') });
+  await page.evaluate(() => { pmShowTab('outils'); pmToolsView = 'cards'; pmRenderTools(); pmOpenMsPopup('t:0', 0); });
+  await page.waitForTimeout(200);
+  await chk('fenêtre du jalon : zone de commentaire grande (taille d\'un commentaire), sur toute la largeur, « Ajouter » dessous', () => page.evaluate(() => {
+    const t = document.getElementById('ms-pop-ctext').getBoundingClientRect(), box = document.querySelector('#ms-popup-ov > div').getBoundingClientRect();
+    const add = [...document.querySelectorAll('#ms-popup-ov .btn')].find(b => /Ajouter/.test(b.textContent)).getBoundingClientRect();
+    return t.height >= 150 && t.width >= box.width - 40 && add.top >= t.bottom - 1 || { t: [t.width, t.height], box: box.width, add: add.top };
+  }));
+  await page.fill('#ms-pop-ctext', 'dictée '.repeat(120));
+  await chk('… elle grandit avec le texte dicté (jusqu\'à la moitié de l\'écran) ; les commentaires s\'affichent en entier', () => page.evaluate(() => {
+    const h = document.getElementById('ms-pop-ctext').getBoundingClientRect().height, l = getComputedStyle(document.getElementById('ms-pop-clist')).maxHeight;
+    return h > 175 && h <= innerHeight * 0.56 && l === 'none' || { h, l, max: innerHeight * 0.55 };
+  }));
+  await page.evaluate(() => document.getElementById('ms-popup-ov').remove());
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

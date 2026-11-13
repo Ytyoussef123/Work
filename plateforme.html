@@ -6779,13 +6779,13 @@ function pmBomRows(i, arr, parentPath) {
     const depth = parentPath.length;
     const hasSub = Array.isArray(b.sub) && b.sub.length > 0;
     const isSemi = hasSub; // un composant avec sous-BOM = semi-fini
-    const bf = (key,ph,w) => `<input type="text" value="${pmEsc(b[key])}" placeholder="${ph}" oninput="pmBomField(${i},${pathStr},'${key}',this.value)" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:12px;width:${w||'100%'}">`;
+    const bf = (key,ph,w) => `<span class="bf-l" data-l="${ph}" style="display:flex;min-width:0"><input type="text" value="${pmEsc(b[key])}" placeholder="${ph}" oninput="pmBomField(${i},${pathStr},'${key}',this.value)" style="background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:12px;width:${w||'100%'}"></span>`;   // (V12) span : libellé sur téléphone (data-l)
 
-    const row = `<div style="display:flex;align-items:center;gap:8px;padding:6px 0 6px ${depth*22}px;border-bottom:1px solid rgba(42,48,64,.25)">
+    const row = `<div class="pm-bomrow" data-d="${depth}" style="display:flex;align-items:center;gap:8px;padding:6px 0 6px ${depth*22}px;--d:${depth};border-bottom:1px solid rgba(42,48,64,.25)">
       <!-- Flèche expand (si sous-BOM) -->
       <span style="width:16px;flex-shrink:0;text-align:center;cursor:${hasSub?'pointer':'default'};color:var(--accent2)" ${hasSub?`onclick="pmToggleBom(${i},${pathStr})"`:''}>${hasSub?(b._open?'▼':'▶'):''}</span>
       <!-- Photo + preview -->
-      <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:3px">
+      <div class="pm-bomph" style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:3px">
         <label style="cursor:pointer;display:block">
           ${b.photo
             ? `<img src="${b.photo}" style="width:42px;height:42px;object-fit:cover;border-radius:6px;border:1px solid var(--border)">`
@@ -6795,7 +6795,7 @@ function pmBomRows(i, arr, parentPath) {
         ${b.photo?`<button type="button" onclick="pmShowBomPhoto(${i},${pathStr})" style="background:none;border:none;color:var(--accent2);font-size:9px;cursor:pointer;padding:0">👁 Show</button>`:''}
       </div>
       <!-- Champs -->
-      <div style="flex:1;display:grid;grid-template-columns:1.2fr 1.6fr 1.2fr 70px 70px;gap:6px;align-items:center">
+      <div class="pm-bomf" style="flex:1;display:grid;grid-template-columns:1.2fr 1.6fr 1.2fr 70px 70px;gap:6px;align-items:center">
         ${bf('ref','Référence')}
         ${bf('designation','Désignation')}
         ${bf('type','Type composant')}
@@ -6803,9 +6803,9 @@ function pmBomRows(i, arr, parentPath) {
         ${bf('unit','Unité')}
       </div>
       <!-- Badge semi-fini -->
-      ${isSemi?'<span style="flex-shrink:0;font-size:9px;font-weight:700;color:var(--accent3);background:rgba(255,107,53,.12);border:1px solid rgba(255,107,53,.3);border-radius:20px;padding:2px 7px">SEMI-FINI</span>':''}
+      ${isSemi?'<span class="pm-bomsemi" style="flex-shrink:0;font-size:9px;font-weight:700;color:var(--accent3);background:rgba(255,107,53,.12);border:1px solid rgba(255,107,53,.3);border-radius:20px;padding:2px 7px">SEMI-FINI</span>':''}
       <!-- Boutons -->
-      <div style="flex-shrink:0;display:flex;gap:4px">
+      <div class="pm-bomact" style="flex-shrink:0;display:flex;gap:4px">
         <button type="button" class="btn bs btn-sm" title="Ajouter un sous-composant (sub-BOM)" onclick="pmAddBom(${i},${pathStr})">＋ sub</button>
         <button type="button" class="set-del" onclick="pmDelBom(${i},${pathStr})">✕</button>
       </div>
@@ -11924,8 +11924,43 @@ css.textContent = `
   #immoSection > div[style*="grid-template-columns:130px"] > :nth-child(2){display:none}
   #immoRows > div > :nth-child(2){grid-column:1/-1;grid-row:2}
   #immoRows > div{padding-bottom:8px;border-bottom:1px dashed var(--border)}
-  [id^="pm-bom-"] > div{flex-wrap:wrap}
-  [id^="pm-bom-"] > div > div[style*="grid-template-columns"]{order:9;flex:1 1 100%!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  /* BOM d'un produit : une carte par composant (V12 ; avant : 5 champs sans libellé sur 2 colonnes, textes coupés).
+     Ligne 1 : photo, Référence, Qté, Unité ; ligne 2 : Désignation (toute la largeur) ; ligne 3 : Type composant, ＋ sub, ✕ ; ▼/▶ et SEMI-FINI : onglets sur le bord.
+     Libellés = data-l des .bf-l (::before) ; .pm-bomf en display:contents pour placer chaque champ ; sous-composant : décalé, barre bleue */
+  div:has(> [id^="pm-bom-"]){padding:12px 8px!important}   /* fiche produit : marges réduites autour des cartes */
+  .pm-bomrow{position:relative;flex-wrap:wrap;align-items:flex-end!important;gap:8px 6px!important;margin:0 0 12px calc(var(--d,0) * 8px);padding:9px!important;border:1px solid var(--border)!important;border-radius:12px;background:color-mix(in srgb,var(--surface2) 45%,transparent)}
+  .pm-bomrow:not([data-d="0"]){border-left:3px solid var(--accent2)!important}
+  .pm-bomrow:has(> span:first-child:not(:empty)), .pm-bomrow:has(.pm-bomsemi){padding-top:17px!important}   /* place sous les onglets ▼ / SEMI-FINI */
+  .pm-bomrow > span:first-child:empty{display:none}
+  .pm-bomrow > span:first-child:not(:empty){position:absolute;top:-10px;right:14px;width:auto!important;padding:0 10px;border:1px solid var(--accent2);border-radius:20px;background:var(--surface);font-size:11px;line-height:18px}   /* ▼/▶ des sous-composants : onglet en haut à droite */
+  .pm-bomph{order:1;align-self:center}
+  .pm-bomf{display:contents!important}
+  .pm-bomf > .bf-l{flex-direction:column;gap:3px}
+  .pm-bomf > .bf-l::before{content:attr(data-l);font:600 9.5px 'DM Sans',sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .pm-bomf > .bf-l:nth-child(1){order:2;flex:1 1 0}
+  .pm-bomf > .bf-l:nth-child(4){order:3;flex:0 0 60px}   /* 60 px : « 1000 » entier */
+  .pm-bomf > .bf-l:nth-child(5){order:4;flex:0 0 58px}
+  .pm-bomf > .bf-l:nth-child(2){order:5;flex:1 1 100%}
+  .pm-bomf > .bf-l:nth-child(3){order:6;flex:1 1 0}
+  .pm-bomact{order:7;align-self:flex-end}
+  .pm-bomact .btn{padding:9px 10px}
+  .pm-bomf input{padding:8px 9px!important;border-radius:8px!important}
+  .pm-bomsemi{position:absolute;top:-9px;left:14px;background:color-mix(in srgb,var(--accent3) 16%,var(--surface))!important}   /* étiquette sur le bord de la carte */
+  @media (max-width:380px){   /* petits téléphones (320–380 px) : 4 lignes, sinon la référence est coupée — photo + Référence, Désignation, Type, puis Qté · Unité · ＋ ✕ */
+    .pm-bomf > .bf-l:nth-child(3){flex:1 1 100%}
+    .pm-bomf > .bf-l:nth-child(4){order:7}
+    .pm-bomf > .bf-l:nth-child(5){order:8}
+    .pm-bomact{order:9;margin-left:auto}
+  }
+  /* Fenêtre du jalon : grande zone d'écriture (commentaires dictés), commentaires affichés en entier (V12 ;
+     avant : saisie de 2 lignes à côté de « ＋ Ajouter », liste limitée à 170 px avec défilement interne) */
+  #ms-popup-ov{padding:10px!important}
+  #ms-popup-ov > div{width:100%!important;max-width:100%!important;max-height:calc(100dvh - 20px)!important;padding:16px!important}
+  #ms-pop-clist{max-height:none!important}
+  #ms-pop-clist > div > div:last-child{font-size:14px!important;line-height:1.45}
+  #ms-popup-ov div:has(> #ms-pop-ctext){flex-direction:column!important;align-items:stretch!important}
+  #ms-popup-ov div:has(> #ms-pop-ctext) > .btn{justify-content:center}
+  #ms-pop-ctext{flex:none!important;min-height:170px!important;line-height:1.45}   /* flex:none : son flex:1 (colonne) ignorait la hauteur → ne grandissait pas */
   [id^="pm-docs-"] > div{grid-template-columns:repeat(2,minmax(0,1fr))!important;padding-bottom:10px;border-bottom:1px solid var(--border)}
   .bc-nums[style*="repeat(5,1fr)"]{grid-template-columns:repeat(3,minmax(0,1fr))!important;row-gap:10px}
   [data-supnew]{white-space:normal;text-align:left}
@@ -12290,6 +12325,9 @@ function init() {
   popExtras();
   // Plein écran activé : le premier toucher le rétablit (il faut un geste de l'utilisateur) ; pas sur un champ (clavier)
   document.addEventListener('click', e => { const t = e.target; if (MQ.matches && fsWanted() && !fsOn() && fsOK() && !appFull() && !(t.closest && t.closest('.m-pop, input, select, textarea'))) fsEnter(); }, true);
+  // Fenêtre du jalon : la zone de commentaire grandit avec le texte (dictée), jusqu'à la moitié de l'écran ; remise à sa taille après « Ajouter » (V12)
+  document.addEventListener('input', e => { const t = e.target; if (t && t.id === 'ms-pop-ctext' && MQ.matches) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, Math.round(innerHeight * 0.55)) + 'px'; } });
+  wrap('pmMsAddComment', o => function () { const r = o.apply(this, arguments); const t = $('ms-pop-ctext'); if (t && !t.value) t.style.height = ''; return r; });
   mirrorBadge('home', $('hp-rail-dot'));
   mirrorBadge('achats', $('xa-nc-liv'));
   mirrorSync();
