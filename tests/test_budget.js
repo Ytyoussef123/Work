@@ -68,7 +68,7 @@ const idbHas = (page, id) => page.evaluate(id => new Promise(res => { const r = 
 const pdf = (name, txt) => ({ name, mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 ' + txt) });
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ env: Object.assign({}, process.env, { LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }) });   // noms de fichiers accentués gardés au téléchargement (Linux)
   const { page, errors } = await open(browser, true);
 
   console.log('1. Lignes client qui partagent le même numéro');
@@ -146,14 +146,11 @@ const pdf = (name, txt) => ({ name, mimeType: 'application/pdf', buffer: Buffer.
   check('budget OPEX sans document : pas de bouton 📎', await page.evaluate(() => { const c = [...document.querySelectorAll('#budgetGrid .budget-card')].find(c => c.textContent.includes('OPEX essais')); return ![...c.querySelectorAll('button')].some(b => /📎/.test(b.textContent)); }));
   await page.evaluate(() => { const c = [...document.querySelectorAll('#budgetGrid .budget-card')].find(c => c.textContent.includes('FILLER')); [...c.querySelectorAll('button')].find(b => /📎/.test(b.textContent)).click(); });
   check('📎 ouvre le budget sur ses documents', await page.evaluate(() => document.getElementById('ovBudget').classList.contains('open') && document.querySelectorAll('#b-att-box .xa-file').length === 1));
-  // Ouvrir le fichier (copie locale) : on intercepte window.open (un PDF se télécharge dans un navigateur sans écran)
-  const opened = await page.evaluate(async () => {
-    const o = window.open; let u = null; window.open = x => { u = x; return {}; };
-    document.querySelector('#b-att-box .xa-file-n').click();
-    for (let i = 0; i < 30 && !u; i++) await new Promise(r => setTimeout(r, 50));
-    window.open = o; return u;
-  });
-  check('le fichier s\'ouvre (copie locale)', /^blob:/.test(opened || ''), opened);
+  // Ouvrir le fichier (copie locale) : téléchargé sous son nom exact, ouvert par le logiciel du poste (V11 ; avant : onglet Chrome)
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }), page.click('#b-att-box .xa-file-n')]);
+  check('le fichier s\'ouvre (copie locale) : téléchargé sous son nom exact', dl.suggestedFilename() === 'accord-budget.pdf', dl.suggestedFilename());
+  check('ordinateur : la marche à suivre pour le logiciel PDF s\'affiche (une fois)', !!(await page.$('#pdf-tip')));
+  if (await page.$('#pdf-tip')) await page.click('#pdf-tip [data-ok]');
   // Retirer puis annuler : rien ne change
   await page.click('#b-att-box [data-ba="rm"]');
   check('retiré du formulaire', (await page.evaluate(() => document.querySelectorAll('#b-att-box .xa-file').length)) === 0);

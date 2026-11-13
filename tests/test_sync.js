@@ -8,7 +8,7 @@ const HTML = fs.readFileSync(APP, 'utf8');
 const JSZIP = (() => { try { return fs.readFileSync(path.join(__dirname, 'node_modules/jszip/dist/jszip.min.js'), 'utf8'); } catch (e) { return null; } })();
 
 // ─── Faux serveur ───
-const docs = new Map(), files = new Map(), listens = [];
+const docs = new Map(), files = new Map(), fileMeta = new Map(), listens = [];   // fileMeta : métadonnées d'envoi (nom de téléchargement, V11)
 const members = new Set(['a@test.fr', 'b@test.fr', 'c@test.fr']);
 const stats = { writes: 0, puts: 0 };
 const pages = new Map();
@@ -43,7 +43,7 @@ function backend(pid) {
       for (const c in byColl) await broadcast(c, byColl[c]);
       return true;
     }
-    if (op === 'put') { stats.puts++; files.set(a.path, a.data); return true; }
+    if (op === 'put') { stats.puts++; files.set(a.path, a.data); fileMeta.set(a.path, a.meta || {}); return true; }
     if (op === 'url') return files.has(a.path) ? 'https://firebasestorage.googleapis.com/v0/b/work-75094.firebasestorage.app/o/' + encodeURIComponent(a.path) + '?alt=media&token=t1' : null;
   };
 }
@@ -68,12 +68,13 @@ async function device(name, seed, email) {
     if (u.startsWith('https://firebasestorage.googleapis.com/')) {
       const p = decodeURIComponent(u.split('/o/')[1].split('?')[0]); const d = files.get(p);
       if (!d) return route.fulfill({ status: 404, body: '' });
-      const [h, b64] = d.split(','); return route.fulfill({ status: 200, contentType: h.slice(5).split(';')[0], headers: { 'access-control-allow-origin': '*' }, body: Buffer.from(b64, 'base64') });
+      const [h, b64] = d.split(','), cd = (fileMeta.get(p) || {}).contentDisposition;
+      return route.fulfill({ status: 200, contentType: h.slice(5).split(';')[0], headers: Object.assign({ 'access-control-allow-origin': '*' }, cd ? { 'content-disposition': cd } : {}), body: Buffer.from(b64, 'base64') });
     }
     return route.abort();
   });
   if (seed) await page.addInitScript(s => { if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); for (const k in s) localStorage.setItem(k, s[k]); } }, seed);
-  await page.addInitScript(e => { window.__mockEmail = e; }, email);
+  await page.addInitScript(e => { window.__mockEmail = e; try { if (!sessionStorage.getItem('tipv')) { sessionStorage.setItem('tipv', '1'); localStorage.setItem('astuce_pdf', '1'); } } catch (x) {} }, email);   // astuce PDF déjà vue (section 18 la teste)
   await page.goto('http://app.test/plateforme.html');
   await page.waitForFunction(() => window.fbSync && typeof window.fbSync.state === 'function');
   return page;
@@ -88,7 +89,7 @@ function check(name, ok, extra) { if (ok) { pass++; console.log('  ✓', name); 
 async function settle(...ps) { await sleep(400); for (const p of ps) { const t = Date.now(); while (Date.now() - t < 8000 && (await p.evaluate(() => fbSync.dirty().length || fbSync.state() === 'sync'))) await sleep(100); } await sleep(500); }
 
 (async () => {
-  browser = await chromium.launch();
+  browser = await chromium.launch({ env: Object.assign({}, process.env, { LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }) });   // noms de fichiers accentués gardés au téléchargement (Linux)
   // Données de départ du poste A
   const purchasesA = [1, 2, 3].map(i => ({ id: 'ID100' + i, line: i, projet: 'P' + i, description: 'Achat ' + i, puHT: 10 * i, quantite: 1, capexOpex: 'OPEX', attachments: i === 1 ? [{ id: 'Fatt1', name: 'offre.pdf', size: 5, type: 'application/pdf' }] : [] }));
   const engA = { companies: [{ id: 'ec1', name: 'Akwel' }], types: [{ id: 'et1', name: 'Sensor', fields: [] }], solutions: [{ id: 'es1', name: 'Sol 1', specHtml: '<p>Texte</p><img src="' + PNG + '" width="120">' }], projects: [], acceptances: [], branding: { logo: PNG2, docname: 'Doc', label: 'TS', conf: '', code: '' } };
@@ -570,6 +571,61 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
     const c2 = await cnt();
     check('rechargé : ce qui a été pris est « identique », le reste encore proposé ; Annuler et « Tout remplacer » refusé ne changent rien', again.voulu === 'absent' && again.nonVoulu === '☑nouveau' && JSON.stringify(c2) === JSON.stringify(c1) && !(await A.$('#zp-ov')), [again, c1, c2]);
   }
+
+  console.log('18. Fichiers ouverts sous leur nom exact ; documentation produit chargée dans l\'app ; plans dans Engineering (V11)');
+  await settle(A, B);
+  let popups = 0; const countPop = () => popups++;
+  A.context().on('page', countPop);
+  // a) achat : la pièce jointe est téléchargée sous son nom exact (logiciel du poste), plus d'onglet Chrome
+  await A.evaluate(() => localStorage.removeItem('astuce_pdf'));
+  await A.evaluate(() => { switchApp('achats'); editRow('IDPJ1'); });
+  await A.waitForTimeout(300);
+  await A.setInputFiles('#xa-box input[data-xa-up]', pdf('Offre – révision B.pdf', 'offre B'));
+  await A.waitForTimeout(400);
+  const ixB = await A.evaluate(() => window.getForm().attachments.findIndex(a => a.name === 'Offre – révision B.pdf'));
+  const [dlA] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.click('#xa-box [data-xa="open"][data-i="' + ixB + '"]')]);
+  check('pièce jointe d\'un achat : téléchargée sous son nom exact (accents, tirets), sans onglet Chrome', dlA.suggestedFilename() === 'Offre – révision B.pdf' && popups === 0, [dlA.suggestedFilename(), popups]);
+  check('ordinateur : la marche à suivre (réglage Chrome pour le logiciel PDF) s\'affiche une fois', await A.evaluate(() => !!document.getElementById('pdf-tip')));
+  await A.click('#pdf-tip [data-ok]');
+  const [dlA2] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.click('#xa-box [data-xa="open"][data-i="' + ixB + '"]')]);
+  check('… puis plus jamais sur ce poste', !(await A.$('#pdf-tip')) && dlA2.suggestedFilename() === 'Offre – révision B.pdf');
+  const fidB = await A.evaluate(i => window.getForm().attachments[i].id, ixB);
+  await waitFor(async () => files.has('app/files/' + fidB));
+  check('envoyé en ligne avec son nom de téléchargement (Content-Disposition)', /filename\*=UTF-8''Offre%20%E2%80%93%20r%C3%A9vision%20B\.pdf/.test((fileMeta.get('app/files/' + fidB) || {}).contentDisposition || ''), fileMeta.get('app/files/' + fidB));
+  // b) Project Master › produit › Documentation Engineering : « ⬆ Charger » met le fichier dans l'app
+  await A.evaluate(() => { switchApp('projects'); pmEditProject('Pp1'); pmShowTab('produits'); pmEditProduct(0); pmProductSubTab('doceng'); });
+  await A.waitForTimeout(300);
+  await A.evaluate(() => { const pr = pmCurProj.products[0]; pr.docs = pr.docs || []; if (!pr.docs.length) pr.docs.push({ type: '', number: '', owner: '', link: '' }); pr.docs[0].type = 'Internal Drawing'; pr.docs[0].number = 'DWG-0042'; document.getElementById('pm-docs-0').innerHTML = pmDocsHtml(0); });
+  await A.waitForTimeout(1500);   // l'enregistrement automatique de ces deux cases passe d'abord
+  const [fc] = await Promise.all([A.waitForEvent('filechooser'), A.click('#pm-docs-0 button[onclick="pmDocUpload(0,0)"]')]);
+  await fc.setFiles(pdf('Plan CX735 Tank — rév. B.pdf', 'plan B'));
+  await A.waitForTimeout(600);
+  const dA = await A.evaluate(() => ({ f: pmCurProj.products[0].docs[0].file, chip: (document.querySelector('#pm-docs-0 .pm-docf-n') || {}).textContent, saved: ((JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1').products[0].docs || [])[0] || {}).file, st: (document.getElementById('pm-autosave') || {}).textContent }));
+  check('documentation produit : « ⬆ Charger » met le fichier dans l\'app (nom exact), affiché sous la ligne, enregistré', !!dA.f && dA.f.name === 'Plan CX735 Tank — rév. B.pdf' && dA.chip === dA.f.name && !!dA.saved && dA.saved.id === dA.f.id, dA);
+  check('… enregistrement normal du projet (pas de fusion « ↻ »)', /✓/.test(dA.st || ''), dA.st);
+  const [dlD] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.click('#pm-docs-0 button[onclick="pmOpenDocLink(0,0)"]')]);
+  check('« ↗ Ouvrir » ouvre le fichier chargé, sous son nom exact', dlD.suggestedFilename() === 'Plan CX735 Tank — rév. B.pdf', dlD.suggestedFilename());
+  await settle(A, B); await sleep(600); await settle(A, B);
+  const docB = (((await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1').products[0] || {}).docs || [])[0] || {};
+  check('le fichier part en ligne avec le projet (nom de téléchargement compris) ; l\'autre poste reçoit la ligne et son fichier', !!docB.file && docB.file.id === dA.f.id && files.has('app/files/' + dA.f.id) && /attachment/.test((fileMeta.get('app/files/' + dA.f.id) || {}).contentDisposition || ''), [docB, files.has('app/files/' + dA.f.id)]);
+  const idbHas = (p, id) => p.evaluate(id => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onsuccess = () => { const q = r.result.transaction('files').objectStore('files').get(id); q.onsuccess = () => res(!!(q.result && q.result.blob)); q.onerror = () => res(false); }; r.onerror = () => res(false); }), id);
+  check('… et en garde une copie sur ce poste-là', await waitFor(() => idbHas(B, dA.f.id)));
+  // c) Engineering (autre poste) : les plans du produit choisi, ouverts d'un clic
+  await B.evaluate(() => { switchApp('engineering'); engNewProject(); const s = document.getElementById('ep-pmProj'); s.value = 'Pp1'; engPickPmProject(); const d = document.getElementById('ep-pmProd'); d.value = d.options[1].value; engPickPmProduct(); });
+  await B.waitForTimeout(200);
+  const engB = await B.evaluate(() => ({ hidden: document.getElementById('ep-pmDocs').hidden, chips: [...document.querySelectorAll('#ep-pmDocs .ep-doc')].map(b => b.textContent) }));
+  check('Engineering › projet lié à un produit : ses plans chargés sont proposés', !engB.hidden && engB.chips.some(t => /Internal Drawing/.test(t) && /DWG-0042/.test(t) && t.includes('Plan CX735 Tank — rév. B.pdf')), engB);
+  const [dlE] = await Promise.all([B.waitForEvent('download', { timeout: 8000 }), B.click('#ep-pmDocs .ep-doc')]);
+  check('… un clic sur le plan l\'ouvre sous son nom exact', dlE.suggestedFilename() === 'Plan CX735 Tank — rév. B.pdf', dlE.suggestedFilename());
+  await B.evaluate(id => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onsuccess = () => { const tx = r.result.transaction('files', 'readwrite'); tx.objectStore('files').delete(id); tx.oncomplete = () => res(); }; }), dA.f.id);
+  const [pop] = await Promise.all([B.context().waitForEvent('page'), B.click('#ep-pmDocs .ep-doc')]);
+  const dlR = await pop.waitForEvent('download', { timeout: 8000 }).catch(() => null);
+  check('fichier absent de ce poste : ouvert depuis sa copie en ligne, téléchargé sous son nom exact', !!dlR && dlR.suggestedFilename() === 'Plan CX735 Tank — rév. B.pdf', dlR && dlR.suggestedFilename());
+  // d) lien qui n'est qu'un nom de fichier (ancien « Charger ») ; sauvegarde .zip
+  const msg = await A.evaluate(() => { const pr = pmCurProj.products[0]; pr.docs.push({ type: 'CAD Model', number: '', owner: '', link: 'ancien plan.pdf' }); pmOpenDocLink(0, pr.docs.length - 1); pr.docs.pop(); return (document.querySelector('.toast') || {}).textContent || ''; });
+  check('lien qui n\'est qu\'un nom de fichier (ancien « Charger ») : message clair au lieu d\'une page « https://… » cassée', /dossier du produit/.test(msg) && popups === 0, [msg, popups]);
+  if (JSZIP) check('sauvegarde .zip : le fichier de la documentation produit est inclus', await A.evaluate(async id => { const z = await JSZip.loadAsync(await buildPlatformZip()); return Object.keys(z.files).some(n => n.startsWith('attachments/' + id + '__')); }, dA.f.id));
+  A.context().off('page', countPop);
 
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);

@@ -2593,7 +2593,7 @@ async function bAttAdd(input) {
 }
 async function bAttOpen(a) {
   const rec = await BFILES.get(a.id).catch(() => null);
-  if (!rec || !rec.blob) { toast('✕', 'Fichier introuvable dans ce navigateur', 'var(--danger)'); return; }
+  if (!rec || !rec.blob) { toast('✕', 'Fichier introuvable dans ce navigateur', 'var(--danger)'); return; } if (typeof window.attSave === 'function') { window.attSave(rec.blob, a.name || rec.name); return; }   // (V11)
   const url = URL.createObjectURL(rec.blob);
   const w = window.open(url, '_blank');
   if (!w) { const l = document.createElement('a'); l.href = url; l.download = a.name; l.click(); }
@@ -6838,9 +6838,9 @@ function pmDocsHtml(pi) {
     <input type="text" value="${pmEsc(d.number)}" placeholder="N° document" oninput="pmCurProj.products[${pi}].docs[${di}].number=this.value" style="min-width:0;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:11px">
     <input type="text" value="${pmEsc(d.owner)}" placeholder="Owner" oninput="pmCurProj.products[${pi}].docs[${di}].owner=this.value" style="min-width:0;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:11px">
     <input type="text" id="pm-doclink-${pi}-${di}" value="${pmEsc(d.link)}" placeholder="Lien / hyperlien" oninput="pmCurProj.products[${pi}].docs[${di}].link=this.value" style="min-width:0;width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:11px">
-    <button class="btn bb btn-sm" title="Ouvrir le lien" onclick="pmOpenDocLink(${pi},${di})" style="white-space:nowrap">↗ Ouvrir</button>
-    <button class="btn bp btn-sm" title="Charger le fichier dans le dossier du produit selon le type" onclick="pmDocUpload(${pi},${di})" style="white-space:nowrap">⬆ Charger</button>
-    <button class="set-del" onclick="pmCurProj.products[${pi}].docs.splice(${di},1);document.getElementById('pm-docs-${pi}').innerHTML=pmDocsHtml(${pi})">✕</button>
+    <button class="btn bb btn-sm" title="Ouvrir le fichier chargé (logiciel du poste), sinon le lien" onclick="pmOpenDocLink(${pi},${di})" style="white-space:nowrap">↗ Ouvrir</button>
+    <button class="btn bp btn-sm" title="Charger le fichier dans l'app (en ligne pour l'équipe) ; copie aussi dans le dossier du produit du PC s'il est lié" onclick="pmDocUpload(${pi},${di})" style="white-space:nowrap">⬆ Charger</button>
+    <button class="set-del" onclick="pmCurProj.products[${pi}].docs.splice(${di},1);document.getElementById('pm-docs-${pi}').innerHTML=pmDocsHtml(${pi})">✕</button>${d.file && typeof window.pmDocFileHtml === 'function' ? window.pmDocFileHtml(pi, di, d.file) : ''}
   </div>`).join('');
 }
 // Type de document → sous-dossier produit (4- PRODUCTS / N- Produit / …)
@@ -9459,7 +9459,7 @@ async function xaAddFiles(input) {
 }
 async function xaOpenFile(a) {
   const rec = await fGet(a.id);
-  if (!rec) { toast('✕', 'Fichier introuvable dans ce navigateur', 'var(--danger)'); return; }
+  if (!rec) { toast('✕', 'Fichier introuvable dans ce navigateur', 'var(--danger)'); return; } if (typeof window.attSave === 'function') { window.attSave(rec.blob, a.name || rec.name); return; }   // (V11) nom exact, logiciel du poste
   const url = URL.createObjectURL(rec.blob);
   const w = window.open(url, '_blank');
   if (!w) { const l = document.createElement('a'); l.href = url; l.download = a.name; l.click(); }
@@ -9693,7 +9693,7 @@ function patchZip() {
     zip.file('purchasing_extras.json', JSON.stringify({ version: 1, extras, suppliers: SUP() }, null, 2));
     const folder = zip.folder('attachments');
     const budgets = (typeof S !== 'undefined' && S && S.budgets) || [];   // + documents des budgets (V5)
-    for (const o of [...P(), ...budgets]) for (const a of (o.attachments || [])) {
+    for (const a of [...P(), ...budgets].flatMap(o => o.attachments || []).concat(((typeof pmInited !== 'undefined' && pmInited ? pmDB : (() => { try { return JSON.parse(localStorage.getItem('pm_db') || '{}'); } catch (e) { return {}; } })()).projects || []).flatMap(p => (p.products || []).flatMap(pr => (pr.docs || []).map(d => d && d.file).filter(Boolean))))) {   // + documentation produit (V11)
       try { const r = await fGet(a.id); if (r) folder.file(a.id + '__' + a.name.replace(/[\\/:*?"<>|]/g, '_'), r.blob); } catch (e) { }
     }
     return zip.generateAsync({ type: 'blob' });
@@ -10913,9 +10913,9 @@ async function pushKey(k) {
         await st.ref('app/img/' + hh).putString(d, 'data_url');
         up['i:' + hh] = 1; saveUp(); cachePut(hh, d);
       }
-      if (k === 'suivi_autosave' || (k === 'suivi_settings' && id.startsWith('budgets:'))) {   // achats, et documents des budgets (V5)
+      if (k === 'suivi_autosave' || (k === 'suivi_settings' && id.startsWith('budgets:')) || (k === 'pm_db' && id.startsWith('projects:'))) {   // achats, documents des budgets (V5), fichiers de la documentation produit (V11)
         let rec = null; try { rec = JSON.parse(loc[id].j); } catch (e) {}
-        for (const a of (rec && rec.attachments) || []) if (a && a.id && !up['f:' + a.id]) await uploadFile(a.id, a);
+        for (const a of ((rec && rec.attachments) || []).concat(((rec && rec.products) || []).flatMap(pr => ((pr && pr.docs) || []).map(d => d && d.file).filter(Boolean)))) if (a && a.id && !up['f:' + a.id]) await uploadFile(a.id, a);
       }
     } catch (e) { blocked.add(id); fileErr = e; }
   }
@@ -11008,7 +11008,7 @@ async function reconcile(k, ids, tries) {
   if (applied) {
     setLocal(k, v);
     received.add(k); refreshSoon();
-    if (k === 'suivi_autosave' || k === 'suivi_settings') pullFiles();
+    if (k === 'suivi_autosave' || k === 'suivi_settings' || k === 'pm_db') pullFiles();
   }
   if (dirty.has(k)) schedule();
 }
@@ -11017,7 +11017,7 @@ async function reconcile(k, ids, tries) {
 function allAtts() {
   const out = [];
   for (const p of (parseLocal('suivi_autosave') || [])) out.push(...((p && p.attachments) || []));
-  for (const b of ((parseLocal('suivi_settings') || {}).budgets || [])) out.push(...((b && b.attachments) || []));
+  for (const b of ((parseLocal('suivi_settings') || {}).budgets || [])) out.push(...((b && b.attachments) || [])); for (const p of ((parseLocal('pm_db') || {}).projects || [])) for (const pr of (p && p.products) || []) for (const d of (pr && pr.docs) || []) if (d && d.file) out.push(d.file);   // + documentation produit (V11)
   return out;
 }
 let pulling = false, pullAgain = false;
@@ -11054,7 +11054,7 @@ function uploadFile(id, meta) {
     if (!f || !f.blob || !st) return;                      // fichier d'un autre poste : il est déjà en ligne
     if (f.blob.size >= MAX_FILE) { upFail.set(id, TOO_BIG); return; }   // refusé de toute façon : l'enregistrement part sans lui
     try {
-      await st.ref('app/files/' + id).put(f.blob, { contentType: f.type || (meta && meta.type) || 'application/octet-stream', customMetadata: { name: String(f.name || (meta && meta.name) || '') } });
+      const nm = String(f.name || (meta && meta.name) || ''), cd = nm && 'attachment; filename="' + nm.replace(/[^\x20-\x7e]|["\\]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(nm); await st.ref('app/files/' + id).put(f.blob, Object.assign({ contentType: f.type || (meta && meta.type) || 'application/octet-stream', customMetadata: { name: nm } }, cd ? { contentDisposition: cd } : {}));
       up['f:' + id] = 1; saveUp(); upFail.delete(id);
     } catch (e) { upFail.set(id, (e && (e.code || e.message)) || 'erreur'); throw e; }
   })();
@@ -11119,7 +11119,7 @@ function wireAttachments() {
       const a = B.atts()[+b.dataset.i];
       if (!a || !a.id || localHave.get(a.id) !== false) return;   // fichier présent sur ce poste : ouverture habituelle
       e.preventDefault(); e.stopPropagation();
-      const w = window.open('', '_blank');                          // ouvert tout de suite (sinon bloqué comme fenêtre surgissante)
+      const w = window.open('', '_blank'); if (typeof window.attOpenRemote === 'function') { window.attOpenRemote(a, w); return; }   // ouvert tout de suite (sinon bloqué comme fenêtre surgissante) ; (V11) nom exact
       st.ref('app/files/' + a.id).getDownloadURL()
         .then(u => { if (w) w.location.href = u; else window.location.href = u; })
         .catch(() => { if (w) w.close(); if (typeof toast === 'function') toast('✕', 'Fichier introuvable en ligne', 'var(--danger)'); });
@@ -12438,6 +12438,12 @@ async function apply(z, items) {
   const deps = withDeps(items), todo = items.filter(it => it.on && it.status !== 'same');
   const by = c => todo.filter(it => it.coll === c);
   const upsert = (arr, it) => { const i = arr.findIndex(o => o && String(o.id) === it.id); if (i < 0) arr.push(clone(it.zip)); else arr[i] = merge(clone(it.zip), arr[i]); };
+  // d'abord les fichiers : pièces jointes des achats et budgets pris, documents des produits des projets pris (V11) ;
+  // la synchro les envoie avec l'enregistrement
+  const want = new Set(), fileIds = l => l.forEach(a => { if (a && a.id && z.files[a.id]) want.add(a.id); });
+  [...by('ach:achats'), ...by('ach:budgets')].forEach(it => fileIds(it.zip.attachments || []));
+  by('pm:projects').forEach(it => (it.zip.products || []).forEach(pr => fileIds((pr.docs || []).map(d => d && d.file))));
+  for (const id of want) { const { f, name } = z.files[id]; try { const b = await f.async('blob'); await filePut(id, { blob: b, name, type: b.type }); } catch (e) { console.warn('Fichier du ZIP', id, e); } }
   if (todo.some(it => it.base === 'pm')) {
     if (typeof pmInit === 'function' && !pmInited) pmInit();
     BASES[0].colls.forEach(([c]) => { const l = by('pm:' + c); if (!l.length) return; if (!Array.isArray(pmDB[c])) pmDB[c] = []; l.forEach(it => upsert(pmDB[c], it)); });
@@ -12450,9 +12456,6 @@ async function apply(z, items) {
   }
   if (todo.some(it => it.base === 'ach')) {
     const pa = by('ach:achats'), bl = by('ach:budgets'), fl = by('ach:fournisseurs');
-    // d'abord les fichiers des pièces jointes : la synchro les envoie avec l'achat ou le budget
-    const want = new Set(); [...pa, ...bl].forEach(it => (it.zip.attachments || []).forEach(a => { if (a && a.id && z.files[a.id]) want.add(a.id); }));
-    for (const id of want) { const { f, name } = z.files[id]; try { const b = await f.async('blob'); await filePut(id, { blob: b, name, type: b.type }); } catch (e) { console.warn('Pièce jointe du ZIP', id, e); } }
     pa.forEach(it => upsert(purchases, it));
     purchases.forEach((p, i) => p.line = i + 1);
     if (bl.length) { if (!Array.isArray(S.budgets)) S.budgets = []; bl.forEach(it => upsert(S.budgets, it)); }
@@ -12603,6 +12606,202 @@ async function zipPick(file) {
 window.zipPick = zipPick;
 // Pour les tests et le dépannage (console)
 window.zipImport = { readZip, itemsOf, withDeps, apply, canon };
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// FICHIERS ET PLANS (V11)
+// 1) Ouvrir un fichier joint (achat, budget, documentation produit) = le TÉLÉCHARGER sous son nom exact, au lieu de
+//    l'afficher dans un onglet Chrome : avec le réglage Chrome « Télécharger les fichiers PDF » + « Toujours ouvrir ce
+//    type de fichier », il s'ouvre dans le logiciel du poste (Acrobat…), comme dans SAP. Fichier seulement en ligne :
+//    il est marqué « à télécharger sous ce nom » (Content-Disposition, aussi posé à l'envoi par la synchro) puis ouvert.
+// 2) Project Master › produit › Documentation Engineering : « ⬆ Charger » met le fichier dans l'app (IndexedDB
+//    hp_files ; la synchro l'envoie en ligne comme une pièce jointe) : doc.file = {id, name, size, type, at} ;
+//    « ↗ Ouvrir » ouvre ce fichier, sinon le lien. Copie dans le dossier du produit du PC si un dossier y est déjà lié.
+// 3) Engineering › projet : les documents chargés (ou liés) du produit Project Master choisi, ouverts d'un clic.
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const PHONE = () => matchMedia('(max-width: 768px)').matches;
+const MAX = 20 * 1048576;   // comme les pièces jointes : moins de 20 Mo (règles Storage)
+const size = n => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' Mo' : Math.max(1, Math.round(n / 1024)) + ' ko';
+// Fichiers : même base que les pièces jointes (IndexedDB hp_files, magasin files : {blob, name, type})
+let fdb;
+const idb = () => fdb = fdb || new Promise((res, rej) => { const r = indexedDB.open('hp_files', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const fileOp = (mode, fn) => idb().then(db => new Promise((res, rej) => { const tx = db.transaction('files', mode), q = fn(tx.objectStore('files')); tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error); }));
+const fileGet = id => fileOp('readonly', s => s.get(id)).catch(() => null);
+const filePut = (id, v) => fileOp('readwrite', s => { s.put(v, id); });
+const attDispo = name => 'attachment; filename="' + String(name).replace(/[^\x20-\x7e]|["\\]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(name);
+const signedIn = () => !!window.fbSync && !['out', 'denied', 'init', 'file'].includes(fbSync.state());
+
+// ─── 1) Ouvrir = télécharger sous le nom exact ───
+function attSave(blob, name) {
+  const url = URL.createObjectURL(blob), l = document.createElement('a');
+  l.href = url; l.download = name || 'fichier'; l.style.display = 'none';
+  document.body.appendChild(l); l.click(); l.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  pdfTip(name, blob && blob.type);
+}
+async function attOpenRemote(a, w) {   // w : onglet ouvert tout de suite au clic (sinon bloqué comme fenêtre surgissante)
+  let ref = null;
+  if (signedIn()) try { ref = firebase.storage().ref('app/files/' + a.id); } catch (e) {}
+  if (!ref) { if (w) w.close(); toast('⚠️', 'Connectez-vous avec ☁ pour ouvrir ce fichier depuis sa copie en ligne', 'var(--warn)'); return; }
+  if (navigator.onLine === false) { if (w) w.close(); toast('⚠️', 'Hors ligne : ce fichier n\'est pas encore sur ce poste', 'var(--warn)'); return; }
+  try {
+    if (ref.getMetadata && ref.updateMetadata) {   // fichier envoyé avant la V11 : on le marque « à télécharger sous son nom »
+      const m = await ref.getMetadata().catch(() => null), cd = attDispo(a.name || (m && m.customMetadata && m.customMetadata.name) || 'fichier');
+      if (m && m.contentDisposition !== cd) await ref.updateMetadata({ contentDisposition: cd }).catch(() => {});
+    }
+    const u = await ref.getDownloadURL();
+    if (w) w.location.href = u; else window.location.href = u;   // téléchargé sous son nom : l'app reste affichée
+    pdfTip(a.name, a.type);
+  } catch (e) { if (w) w.close(); toast('✕', 'Fichier introuvable en ligne', 'var(--danger)'); }
+}
+async function attOpen(a) {   // sur ce poste d'abord, sinon sa copie en ligne
+  if (!a || !a.id) return;
+  const rec = await fileGet(a.id);
+  if (rec && rec.blob) return attSave(rec.blob, a.name || rec.name);
+  attOpenRemote(a, window.open('', '_blank'));
+}
+// Une fois par poste (ordinateur) : le réglage Chrome qui fait ouvrir les PDF dans le logiciel PDF
+function pdfTip(name, type) {
+  if (PHONE() || !(/pdf/i.test(type || '') || /\.pdf$/i.test(name || ''))) return;
+  try { if (localStorage.getItem('astuce_pdf')) return; localStorage.setItem('astuce_pdf', '1'); } catch (e) { return; }
+  const ov = document.createElement('div'); ov.className = 'fb-ov'; ov.id = 'pdf-tip';
+  ov.innerHTML = '<div class="fb-dlg"><h3>📄 Ouvrir les PDF dans votre logiciel PDF</h3>' +
+    '<p>Le fichier est téléchargé sous son <b>nom exact</b>. Pour qu\'il s\'ouvre tout seul dans votre logiciel PDF (Acrobat…), comme dans SAP, réglez Chrome une seule fois :</p>' +
+    '<p><b>1.</b> Collez <code>chrome://settings/content/pdfDocuments</code> dans la barre d\'adresse et choisissez <b>« Télécharger les fichiers PDF »</b>.</p>' +
+    '<p><b>2.</b> Au prochain PDF ouvert ici : dans la liste des téléchargements (en haut à droite), <b>⋮</b> à côté du fichier › <b>« Toujours ouvrir ce type de fichier »</b>.</p>' +
+    '<div class="fb-row"><button type="button" class="btn bs btn-sm" data-c>Copier l\'adresse</button><button type="button" class="btn bp btn-sm" data-ok>Compris</button></div></div>';
+  ov.addEventListener('click', e => {
+    if (e.target.closest('[data-c]')) { (navigator.clipboard ? navigator.clipboard.writeText('chrome://settings/content/pdfDocuments') : Promise.reject()).then(() => toast('✓', 'Adresse copiée : collez-la dans la barre d\'adresse'), () => {}); return; }
+    if (e.target === ov || e.target.closest('[data-ok]')) ov.remove();
+  });
+  document.body.appendChild(ov);
+}
+Object.assign(window, { attSave, attOpen, attOpenRemote, attDispo });
+
+// ─── 2) Documentation Engineering du produit : le fichier dans l'app ───
+const DOCFILE = /^[^\/\\:]+\.(pdf|dwg|dxf|stp|step|igs|iges|x_t|jt|catpart|catproduct|catdrawing|sldprt|sldasm|slddrw|prt|asm|drw|xlsx?|xlsm|docx?|pptx?|png|jpe?g|tiff?|zip|txt|csv)$/i;   // un simple nom de fichier (ancien « Charger » : rangé dans le dossier du PC)
+const docOf = (pi, di) => { try { return pmCurProj.products[pi].docs[di]; } catch (e) { return null; } };
+const renderDocs = pi => { const b = document.getElementById('pm-docs-' + pi); if (b) b.innerHTML = pmDocsHtml(pi); };
+const persist = () => { try { if (window.pmAutosave) pmAutosave.persist(); } catch (e) {} };
+window.pmDocFileHtml = (pi, di, f) => {
+  let on = false; try { on = !!JSON.parse(localStorage.getItem('fb_up') || '{}')['f:' + f.id]; } catch (e) {}
+  const [txt, col, tip] = on ? ['☁ en ligne', 'var(--accent)', 'Enregistré en ligne : l\'équipe peut l\'ouvrir'] : signedIn() ? ['⏳ envoi…', 'var(--accent2)', 'Envoi en ligne en cours'] : ['sur ce poste', 'var(--warn)', 'Connectez-vous avec ☁ pour l\'envoyer en ligne'];
+  return '<div class="pm-docf"><span>📄</span><span class="pm-docf-n" title="Ouvrir « ' + esc(f.name) + ' » (logiciel du poste)" onclick="pmDocOpenFile(' + pi + ',' + di + ')">' + esc(f.name) + '</span>' +
+    '<span class="pm-docf-s">' + size(f.size || 0) + '</span><span class="pm-docf-st" style="color:' + col + '" title="' + tip + '">' + txt + '</span>' +
+    '<button class="set-del" title="Retirer le fichier de ce document" onclick="pmDocRemoveFile(' + pi + ',' + di + ')">✕</button></div>';
+};
+window.pmDocOpenFile = (pi, di) => { const d = docOf(pi, di); if (d && d.file) attOpen(d.file); };
+window.pmDocRemoveFile = (pi, di) => {
+  const d = docOf(pi, di); if (!d || !d.file) return;
+  if (!confirm('Retirer « ' + d.file.name + ' » de ce document ?\n(Le n°, l\'owner et le lien restent.)')) return;
+  delete d.file; renderDocs(pi); persist();
+};
+// Copie dans le dossier du produit sur le PC (ancien « Charger ») : seulement si un dossier projets est déjà lié et autorisé
+async function pcCopy(pi, type, files) {
+  try {
+    if (!('showDirectoryPicker' in window) || !pmCurProj || !pmCurProj.name || !type) return false;
+    const sub = pmDocFolder(type); if (!sub) return false;
+    const root = (typeof pmRootDir !== 'undefined' && pmRootDir) || await pmIdbGet('root').catch(() => null);
+    if (!root || (await root.queryPermission({ mode: 'readwrite' })) !== 'granted') return false;
+    const pr = pmCurProj.products[pi], pname = (pi + 1) + '- ' + (pmSafe(pr.name || pr.internalRef || pr.customerRef || pr.sapRef) || 'Product N° ' + (pi + 1));
+    const pd = await root.getDirectoryHandle(pmProjectFolderName(pmCurProj), { create: true });
+    const dir = await (await (await pd.getDirectoryHandle(PM_PROD_FOLDER, { create: true })).getDirectoryHandle(pname, { create: true })).getDirectoryHandle(pmSafe(sub), { create: true });
+    for (const f of files) { const w = await (await dir.getFileHandle(f.name, { create: true })).createWritable(); await w.write(f); await w.close(); }
+    return true;
+  } catch (e) { return false; }
+}
+window.pmDocUpload = function (pi, di) {
+  const pr = pmCurProj && pmCurProj.products && pmCurProj.products[pi], d = docOf(pi, di); if (!d) return;
+  const inp = document.createElement('input'); inp.type = 'file'; inp.multiple = true;
+  inp.onchange = async () => {
+    const all = [...inp.files], files = all.filter(f => f.size < MAX), big = all.filter(f => f.size >= MAX);
+    if (big.length) toast('⚠️', big.map(f => f.name).join(', ') + ' : plus de 20 Mo, non chargé', 'var(--warn)');
+    if (!files.length) return;
+    if (d.file && !confirm('Remplacer « ' + d.file.name + ' » par « ' + files[0].name + ' » ?')) return;
+    let k = di;
+    for (const [n, f] of files.entries()) {
+      const id = 'F' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      await filePut(id, { blob: f, name: f.name, type: f.type });
+      const meta = { id, name: f.name, size: f.size, type: f.type || '', at: new Date().toISOString() };
+      if (!n) d.file = meta;
+      else pr.docs.splice(++k, 0, { type: d.type || '', number: '', owner: d.owner || '', link: '', file: meta });   // fichiers en plus : une ligne chacun, même type
+    }
+    renderDocs(pi); persist();
+    [2500, 7000].forEach(t => setTimeout(() => renderDocs(pi), t));   // état « ☁ en ligne » une fois envoyé
+    const pc = await pcCopy(pi, d.type, files);
+    toast('✓', files.length + ' fichier(s) chargé(s) dans l\'app' + (pc ? ' — copie dans le dossier du produit sur ce PC' : '') + (pmCurProj.id ? '' : ' : enregistrez le projet (💾) pour les garder'));
+  };
+  inp.click();
+};
+const pmOpenLinkOld = window.pmOpenDocLink;
+function openLink(url, fallback) {
+  if (DOCFILE.test(url)) { toast('⚠️', '« ' + url + ' » est seulement dans le dossier du produit d\'un PC (ancien « Charger ») : chargez-le de nouveau avec ⬆ Charger pour l\'avoir dans l\'app', 'var(--warn)'); return; }
+  if (fallback) return fallback();
+  let u = url; if (!/^https?:\/\//i.test(u) && !/^\\\\/.test(u) && !/^file:/i.test(u)) u = 'https://' + u;
+  window.open(u, '_blank');
+}
+window.pmOpenDocLink = function (pi, di) {
+  const d = docOf(pi, di); if (!d) return;
+  if (d.file) return attOpen(d.file);
+  const url = (d.link || '').trim();
+  if (!url) { toast('⚠️', 'Aucun fichier ni lien : « ⬆ Charger » met le fichier dans l\'app, ou collez un lien', 'var(--warn)'); return; }
+  openLink(url, typeof pmOpenLinkOld === 'function' ? () => pmOpenLinkOld(pi, di) : null);
+};
+
+// ─── 3) Engineering › projet : les documents du produit Project Master choisi ───
+const pmData = () => (typeof engPmDB === 'function' ? engPmDB() : (typeof pmDB !== 'undefined' ? pmDB : {})) || {};
+function engProd() {
+  const pid = (document.getElementById('ep-pmProj') || {}).value, v = (document.getElementById('ep-pmProd') || {}).value;
+  const p = (pmData().projects || []).find(x => x.id === pid); if (!p || v === '' || v == null) return null;
+  const i = (p.products || []).findIndex((pr, k) => String(pr.id || k) === v);
+  return i < 0 ? null : { p, i, pr: p.products[i], name: typeof engPmProdName === 'function' ? engPmProdName(p.products[i], i) : (p.products[i].name || 'Produit ' + (i + 1)) };
+}
+function engRenderPmDocs() {
+  const box = document.getElementById('ep-pmDocs'); if (!box) return;
+  const x = engProd();
+  if (!x) { box.hidden = true; box.innerHTML = ''; return; }
+  const docs = (x.pr.docs || []).map((d, di) => ({ d, di })).filter(o => o.d && (o.d.file || String(o.d.link || '').trim()));
+  box.hidden = false;
+  box.innerHTML = '<label>📐 Plans et documents du produit <span class="ep-pmdocs-h">— Project Master › ' + esc(x.name) + ' › Documentation Engineering</span></label>' +
+    (docs.length ? '<div class="ep-pmdocs">' + docs.map(({ d, di }) => '<button type="button" class="ep-doc" data-di="' + di + '" title="' + esc(d.file ? 'Ouvrir « ' + d.file.name + ' » (logiciel du poste)' : 'Ouvrir le lien ' + d.link) + '"><span>' +
+      (d.file ? '📄' : '🔗') + ' <b>' + esc(d.type || 'Document') + '</b>' + (d.number ? ' · N° ' + esc(d.number) : '') + '</span><small>' + esc(d.file ? d.file.name : d.link) + '</small></button>').join('') + '</div>'
+      : '<div class="ep-pmdocs-0">Aucun document chargé pour ce produit. Chargez le plan dans Project Master › ' + esc(x.p.name || 'ce projet') + ' › Produits › ' + esc(x.name) + ' › Documentation Engineering (⬆ Charger).</div>');
+}
+function engDocsInit() {
+  const sel = document.getElementById('ep-pmProd'), grid = sel && sel.closest('div[style*="grid-template-columns"]');
+  if (!grid || document.getElementById('ep-pmDocs')) return;
+  const box = document.createElement('div'); box.id = 'ep-pmDocs'; box.className = 'fg'; box.hidden = true;
+  grid.after(box);
+  box.addEventListener('click', e => {
+    const b = e.target.closest('.ep-doc'), x = b && engProd(), d = x && (x.pr.docs || [])[+b.dataset.di]; if (!d) return;
+    if (d.file) attOpen(d.file); else openLink(String(d.link || '').trim());
+  });
+  const wrapW = (n, mk) => { const o = window[n]; if (typeof o === 'function') window[n] = mk(o); };
+  ['engFillPmSelects', 'engPickPmProject', 'engPickPmProduct'].forEach(n => wrapW(n, o => function () { const r = o.apply(this, arguments); try { engRenderPmDocs(); } catch (e) {} return r; }));
+}
+const css = document.createElement('style');
+css.textContent = `
+.pm-docf{grid-column:1/-1;display:flex;align-items:center;gap:8px;min-width:0;margin:-2px 0 4px;padding:5px 9px;border:1px dashed var(--border);border-radius:7px;font-size:11.5px}
+.pm-docf-n{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent2);font-weight:600;cursor:pointer}
+.pm-docf-n:hover{text-decoration:underline}
+.pm-docf-s{flex-shrink:0;color:var(--muted);font:500 10.5px 'DM Mono',monospace}
+.pm-docf-st{flex-shrink:0;font-size:10.5px;font-weight:600;white-space:nowrap}
+#ep-pmDocs[hidden]{display:none}
+.ep-pmdocs-h{font-size:10px;color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400}
+.ep-pmdocs{display:flex;flex-wrap:wrap;gap:7px}
+.ep-doc{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;max-width:100%;padding:7px 11px;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font:500 12px 'DM Sans',sans-serif;text-align:left;cursor:pointer}
+.ep-doc:hover{border-color:var(--accent2)}
+.ep-doc span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ep-doc small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent2);font-size:11px}
+.ep-pmdocs-0{color:var(--muted);font-size:12px;line-height:1.5;padding:10px 12px;border:1px dashed var(--border);border-radius:8px}
+#pdf-tip code{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;font-size:11.5px;word-break:break-all}`;
+document.head.appendChild(css);
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', engDocsInit); else engDocsInit();
+window.engPmDocs = { render: engRenderPmDocs, product: engProd };   // tests, dépannage
 })();
 </script>
 </body>

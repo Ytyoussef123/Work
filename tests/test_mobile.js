@@ -315,6 +315,24 @@ const MEASURE = `(() => {
     await page.evaluate(() => window.__zpDone);
     await chk('« Ajouter la sélection » : le projet nouveau est ajouté, le projet modifié (non coché) reste tel quel', () => page.evaluate(() => pmDB.projects.some(p => p.id === 'PpZ') && pmDB.projects[0].oem !== 'OEM du ZIP' && !document.getElementById('zp-ov')));
   }
+  // ─── V11 : documentation produit (fichier chargé) et plans du produit dans Engineering, dans la largeur du téléphone ───
+  await page.evaluate(() => {
+    switchApp('projects'); pmEditProject('Pp1'); pmShowTab('produits'); pmEditProduct(0); pmProductSubTab('doceng');
+    const d = pmCurProj.products[0].docs[0]; d.type = 'Internal Drawing'; d.number = 'DWG-0042'; d.link = 'https://pdm.example.com/plan/42';
+    d.file = { id: 'Fmob', name: 'Plan CX735 Tank — révision B avec un nom assez long.pdf', size: 145000, type: 'application/pdf' };
+    document.getElementById('pm-docs-0').innerHTML = pmDocsHtml(0); window.scrollTo(0, 0);
+  });
+  await chk('documentation produit : le fichier chargé s\'affiche sous sa ligne, dans la largeur de l\'écran', () => page.evaluate(() => {
+    const f = document.querySelector('#pm-docs-0 .pm-docf'), r = f && f.getBoundingClientRect();
+    return !!f && r.width > 150 && r.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth || { r: r && [r.left, r.right], sw: document.documentElement.scrollWidth };
+  }));
+  await page.evaluate(() => { pmAutosave.persist(); switchApp('engineering'); engEditProject(engDB.projects[0].id); const s = document.getElementById('ep-pmProj'); s.value = 'Pp1'; engPickPmProject(); const p = document.getElementById('ep-pmProd'); p.value = p.options[1].value; engPickPmProduct(); });
+  await page.waitForTimeout(200);
+  await chk('Engineering › projet : « Plans et documents du produit » (fichier et lien), dans la largeur de l\'écran', () => page.evaluate(() => {
+    const b = document.getElementById('ep-pmDocs'), chips = [...b.querySelectorAll('.ep-doc')];
+    return !b.hidden && chips.length >= 1 && chips.every(c => c.getBoundingClientRect().right <= innerWidth) && document.documentElement.scrollWidth <= innerWidth || { hidden: b.hidden, n: chips.length, sw: document.documentElement.scrollWidth };
+  }));
+  if (SHOTS) { await page.evaluate(() => document.getElementById('ep-pmDocs').scrollIntoView({ block: 'center' })); await page.screenshot({ path: path.join(SHOTS, 'eng_plans.png') }); }
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }
