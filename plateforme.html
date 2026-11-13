@@ -13037,5 +13037,126 @@ css.textContent = `
 document.head.appendChild(css);
 })();
 </script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// VERSIONS DES VOLUMES (V16)
+// Project Master › projet › Volumes : « 🗂 Nouvelle version » archive les volumes actuels (lecture seule, ouverts
+// d'un clic) ; la nouvelle version part des mêmes chiffres. Données du projet :
+//   volumes        : la version ACTUELLE (inchangé : capacité, Extraction CSV et Reports la lisent comme avant)
+//   volVer, volVerFrom : n° et date de début de la version actuelle
+//   volumeVersions : [{ id, n, from, to, volumes:[{year, volume}] }] versions archivées (id : fusion par id entre postes)
+// Production › Analyse de capacité : petite liste des versions, la dernière choisie à chaque ouverture de l'onglet ;
+// une ancienne version : la charge par année (écran et Extraction CSV) est calculée avec ses volumes, sans toucher
+// aux volumes du projet.
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const P = () => (typeof pmCurProj !== 'undefined' && pmCurProj) || null;
+const vers = p => (p && Array.isArray(p.volumeVersions) ? p.volumeVersions : []).filter(v => v && v.id).slice().sort((a, b) => (Number(b.n) || 0) - (Number(a.n) || 0));
+const curN = p => Number(p && p.volVer) || (vers(p).reduce((m, v) => Math.max(m, Number(v.n) || 0), 0) + 1);
+const day = s => { const d = new Date(s); return s && !isNaN(d) ? d.toLocaleDateString('fr-FR') : ''; };
+const num = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+const fmt = n => num(n).toLocaleString('fr-FR');
+const persist = () => { try { if (window.pmAutosave) pmAutosave.persist(); } catch (e) {} };
+const open = new Set();             // versions archivées dépliées (onglet Volumes)
+let sel = { pid: null, id: '' };    // version vue dans Production ('' = actuelle)
+
+// ─── Onglet Volumes ───
+window.pmVolNewVersion = function () {
+  const p = P(); if (!p) return;
+  if (!(p.volumes || []).some(v => v && (String(v.year || '') !== '' || String(v.volume || '') !== ''))) { toast('⚠️', 'Aucun volume à archiver : saisissez d\'abord les volumes de cette version', 'var(--warn)'); return; }
+  const n = curN(p);
+  if (!confirm('Archiver les volumes actuels (version V' + n + ') et commencer la version V' + (n + 1) + ' ?\n\nLa version V' + n + ' reste consultable (lecture seule). La version V' + (n + 1) + ' part des mêmes chiffres : modifiez ceux qui changent.')) return;
+  const now = new Date().toISOString();
+  p.volumeVersions = (Array.isArray(p.volumeVersions) ? p.volumeVersions : []).concat([{ id: 'VV' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), n, from: p.volVerFrom || '', to: now, volumes: JSON.parse(JSON.stringify(p.volumes || [])) }]);
+  p.volVer = n + 1; p.volVerFrom = now;
+  pmRenderVolumes(); persist();
+  toast('✓', 'Version V' + n + ' archivée — vous modifiez maintenant la version V' + (n + 1));
+};
+window.pmVolToggle = function (id) { if (open.has(id)) open.delete(id); else open.add(id); pmRenderVolumes(); };
+function archHtml(p) {
+  const list = vers(p); if (!list.length) return '';
+  const cur = {}; (p.volumes || []).forEach(v => { if (v) cur[String(v.year)] = v.volume; });
+  return '<div class="pm-vol-arch"><div class="pm-vol-arch-h">🗂 Versions archivées (' + list.length + ') — lecture seule</div>' + list.map(v => {
+    const rows = (v.volumes || []).filter(Boolean).slice().sort((a, b) => num(a.year) - num(b.year)), tot = rows.reduce((s, r) => s + num(r.volume), 0), on = open.has(v.id);
+    const span = (v.from ? day(v.from) + ' → ' : 'jusqu\'au ') + day(v.to);
+    return '<div class="pm-vol-v' + (on ? ' on' : '') + '"><button type="button" class="pm-vol-vh" onclick="pmVolToggle(' + esc(JSON.stringify(v.id)) + ')" title="' + (on ? 'Fermer' : 'Voir les volumes de cette version') + '"><b>V' + esc(v.n) + '</b><span>' + esc(span) + ' · ' + rows.length + ' année' + (rows.length > 1 ? 's' : '') + ' · total ' + fmt(tot) + '</span><i>' + (on ? '▾' : '▸') + '</i></button>' +
+      (on ? '<table class="pm-vol-t"><thead><tr><th>Année</th><th>V' + esc(v.n) + '</th><th>Actuelle (V' + curN(p) + ')</th><th>Écart</th></tr></thead><tbody>' + rows.map(r => {
+        const c = cur[String(r.year)], has = c !== undefined && c !== '', d = has ? num(c) - num(r.volume) : null;
+        return '<tr><td>' + esc(r.year) + '</td><td>' + fmt(r.volume) + '</td><td>' + (has ? fmt(c) : '—') + '</td><td class="' + (d > 0 ? 'up' : d < 0 ? 'down' : '') + '">' + (d === null ? '—' : (d > 0 ? '+' : '') + fmt(d)) + '</td></tr>';
+      }).join('') + '</tbody></table>' : '') + '</div>';
+  }).join('') + '</div>';
+}
+function decorateVol() {
+  const el = $('pm-volumes'), p = P(); if (!el || !p) return;
+  const panel = el.closest('.panel'), ph = panel && panel.querySelector('.ph'), add = ph && ph.querySelector('button[onclick="pmAddVolume()"]');
+  if (add && !ph.querySelector('#pm-vol-newver')) {   // « 🗂 Nouvelle version » à côté de « ＋ Ajouter année »
+    const g = document.createElement('div'); g.className = 'pm-vol-btns'; g.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    add.replaceWith(g);
+    g.insertAdjacentHTML('beforeend', '<button type="button" class="btn bs btn-sm" id="pm-vol-newver" onclick="pmVolNewVersion()" title="Archiver les volumes actuels (consultables ensuite) et commencer une nouvelle version">🗂 Nouvelle version</button>');
+    g.appendChild(add);
+  }
+  el.insertAdjacentHTML('afterbegin', '<div class="pm-vol-cur">Version actuelle <b>V' + curN(p) + '</b>' + (p.volVerFrom ? ' · depuis le ' + day(p.volVerFrom) : '') + '</div>');
+  el.insertAdjacentHTML('beforeend', archHtml(p));
+}
+
+// ─── Production : capacité avec la version choisie ───
+const chosen = p => (!p || sel.pid !== p.id || !sel.id) ? null : vers(p).find(v => v.id === sel.id) || null;
+const withVersion = o => function () {   // o s'exécute avec les volumes de la version choisie ; ceux du projet sont remis aussitôt
+  const p = P(), v = chosen(p); if (!v) return o.apply(this, arguments);
+  const cur = p.volumes; p.volumes = JSON.parse(JSON.stringify(v.volumes || []));
+  try { return o.apply(this, arguments); } finally { p.volumes = cur; }
+};
+window.pmCapVersion = function (id) { const p = P(); if (!p) return; sel = { pid: p.id, id: id || '' }; pmRenderCapacity(); };
+function decorateCap() {
+  const box = $('pm-capacity'), p = P(); if (!box || !p) return;
+  const panel = box.closest('.panel'), grp = panel && panel.querySelector('.ph > div[style*="display:flex"]'), list = vers(p);
+  let s = $('pm-cap-ver');
+  if (!list.length) { if (s) s.remove(); return; }
+  const v = chosen(p), n = curN(p);
+  if (!s && grp) { grp.insertAdjacentHTML('afterbegin', '<select id="pm-cap-ver" class="pm-cap-ver" title="Version des volumes utilisée pour la charge" onchange="pmCapVersion(this.value)"></select>'); s = $('pm-cap-ver'); }
+  if (s) s.innerHTML = '<option value="">Volumes V' + n + ' — actuelle</option>' + list.map(x => '<option value="' + esc(x.id) + '"' + (v && v.id === x.id ? ' selected' : '') + '>Volumes V' + esc(x.n) + ' — archivée le ' + esc(day(x.to)) + '</option>').join('');
+  if (v) box.insertAdjacentHTML('afterbegin', '<div class="pm-cap-old">📦 Charge calculée avec les volumes de la version <b>V' + esc(v.n) + '</b> (archivée le ' + esc(day(v.to)) + ') — la version actuelle est V' + n + '.</div>');
+}
+const wrap = (n, mk) => { const o = window[n]; if (typeof o === 'function') window[n] = mk(o); };
+wrap('pmRenderVolumes', o => function () { const r = o.apply(this, arguments); try { decorateVol(); } catch (e) { console.warn('versions des volumes', e); } return r; });
+wrap('pmRenderCapacity', o => { const w = withVersion(o); return function () { const r = w.apply(this, arguments); try { decorateCap(); } catch (e) { console.warn('versions des volumes', e); } return r; }; });
+wrap('pmExportCapacityCSV', withVersion);
+wrap('pmShowTab', o => function (id) { if (id === 'production') sel = { pid: null, id: '' }; return o.apply(this, arguments); });   // la dernière version à chaque ouverture
+const ARROW = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b93a7' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")";
+const css = document.createElement('style');
+css.textContent = `
+.pm-vol-cur{font-size:11.5px;color:var(--muted);margin:0 0 10px}
+.pm-vol-cur b{color:var(--accent2);font-family:'DM Mono',monospace}
+.pm-vol-arch{margin-top:16px;padding-top:12px;border-top:1px dashed var(--border)}
+.pm-vol-arch-h{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.pm-vol-v{margin-bottom:6px}
+.pm-vol-vh{display:flex;align-items:center;gap:10px;width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface2);color:var(--text);font:500 12.5px 'DM Sans',sans-serif;text-align:left;cursor:pointer}
+.pm-vol-vh:hover,.pm-vol-v.on .pm-vol-vh{border-color:var(--accent2)}
+.pm-vol-v.on .pm-vol-vh{border-radius:9px 9px 0 0}
+.pm-vol-vh b{font-family:'DM Mono',monospace;color:var(--accent2)}
+.pm-vol-vh span{flex:1 1 auto;min-width:0;color:var(--muted)}
+.pm-vol-vh i{font-style:normal;color:var(--muted)}
+.pm-vol-t{width:100%;border-collapse:collapse;font-size:12.5px;border:1px solid var(--accent2);border-top:0}
+.pm-vol-t th{padding:6px 10px;text-align:right;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--surface2)}
+.pm-vol-t td{padding:6px 10px;text-align:right;font-family:'DM Mono',monospace;border-top:1px solid var(--border)}
+.pm-vol-t th:first-child,.pm-vol-t td:first-child{text-align:left}
+.pm-vol-t td.up{color:var(--accent)}
+.pm-vol-t td.down{color:var(--danger)}
+.pm-cap-ver{width:auto!important;max-width:100%;padding:5px 26px 5px 10px!important;font-size:12px!important;background-image:${ARROW}!important;background-repeat:no-repeat!important;background-position:right 9px center!important;background-size:9px!important}
+.pm-cap-old{font-size:12px;color:var(--warn);background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.3);border-radius:8px;padding:8px 11px;margin-bottom:12px;line-height:1.45}
+@media (max-width:768px){
+  .pm-cap-ver{font-size:16px!important;flex:1 1 100%;min-width:0;width:100%!important}   /* (sinon l'option la plus longue élargit la liste au-delà de l'écran) */
+  .ph > div:has(> .pm-cap-ver){flex:1 1 100%;min-width:0}
+  .pm-vol-vh{font-size:13.5px;padding:10px 12px}
+  .pm-vol-t{font-size:13px}
+  .pm-vol-t th,.pm-vol-t td{padding:6px 7px}
+}`;
+document.head.appendChild(css);
+window.pmVolVersions = { versions: vers, current: curN };   // tests, dépannage
+})();
+</script>
 </body>
 </html>

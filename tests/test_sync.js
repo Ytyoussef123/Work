@@ -740,6 +740,40 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   check('notes d\'un outil (ordinateur) : statut et urgence en petites pastilles, tout l\'en-tête sur une ligne (avant : barres pleine largeur)', !!nt && nt.sel.length === 2 && nt.sel.every(x => x < 160) && nt.oneLine, nt);
   await A.evaluate(() => { pmCurProj.tools[0].notes = pmCurProj.tools[0].notes.filter(n => n.id !== 'NV15'); pmCloseTool(); });
 
+  console.log('21. Versions des volumes (onglet Volumes) et capacité par version (onglet Production) (V16)');
+  await settle(A, B);
+  await A.evaluate(() => { switchApp('projects'); pmEditProject('Pp1'); Object.assign(pmCurProj, { volumes: [{ year: 2027, volume: 150000 }, { year: 2028, volume: 220000 }], openHoursDay: 8, shiftsWeek: 15, weeksYear: 47 }); pmRenderProjectForm(); pmShowTab('volumes'); });
+  await A.waitForTimeout(1500);   // enregistrement automatique des volumes de départ
+  const hasNV = !!(await A.$('#pm-vol-newver'));
+  if (hasNV) {
+    await A.click('#pm-vol-newver'); await A.waitForTimeout(300);
+    await A.fill('#pm-volumes tbody tr:nth-child(2) td:nth-child(2) input', '260000'); await A.press('#pm-volumes tbody tr:nth-child(2) td:nth-child(2) input', 'Tab');
+    await A.waitForTimeout(1600);
+  }
+  const vv = await A.evaluate(() => { const sv = JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1');
+    return { volVer: pmCurProj.volVer, vv: (pmCurProj.volumeVersions || []).map(v => v.n + ':' + v.volumes.map(x => x.year + '=' + x.volume).join(',')), cur: pmCurProj.volumes.map(x => x.year + '=' + x.volume).join(','), saved: (sv.volumeVersions || []).length, savedVer: sv.volVer }; });
+  check('« 🗂 Nouvelle version » : les volumes actuels (V1) sont archivés tels quels ; la V2 part des mêmes chiffres et se modifie seule ; enregistré', hasNV && vv.volVer == 2 && vv.vv.join() === '1:2027=150000,2028=220000' && vv.cur === '2027=150000,2028=260000' && vv.saved === 1 && vv.savedVer == 2, [hasNV, vv]);
+  if (hasNV) await A.click('.pm-vol-vh');
+  const av = await A.evaluate(() => ({ rows: [...document.querySelectorAll('.pm-vol-t tbody tr')].map(r => [...r.cells].map(c => c.textContent.replace(/\s/g, '')).join('|')), inputs: document.querySelectorAll('.pm-vol-arch input').length }));
+  check('version archivée : un clic l\'ouvre en lecture seule (année, volume, volume actuel, écart)', av.rows.join(';') === '2027|150000|150000|0;2028|220000|260000|+40000' && av.inputs === 0, av);
+  await A.evaluate(() => pmShowTab('production')); await A.waitForTimeout(200);
+  const capOf = () => A.evaluate(() => { const s = document.getElementById('pm-cap-ver'), t = document.querySelector('#pm-capacity table');
+    return { opts: s ? s.options.length : 0, val: s ? s.value : null, vols: t ? t.textContent.replace(/\s/g, '') : '', note: !!document.querySelector('.pm-cap-old'), cur: pmCurProj.volumes.map(x => x.volume).join(',') }; });
+  const k1 = await capOf();
+  let csvV1 = false;
+  if (k1.opts) {
+    await A.selectOption('#pm-cap-ver', { index: 1 }); await A.waitForTimeout(200);
+    const [dlV] = await Promise.all([A.waitForEvent('download', { timeout: 8000 }), A.evaluate(() => pmExportCapacityCSV())]);
+    const txt = fs.readFileSync(await dlV.path(), 'utf8'); csvV1 = /220000/.test(txt) && !/260000/.test(txt);
+  }
+  const k2 = await capOf();
+  await A.evaluate(() => { pmShowTab('volumes'); pmShowTab('production'); });
+  const k3 = await capOf();
+  check('Production : liste des versions, la dernière par défaut ; V1 choisie : charge et Extraction CSV avec ses volumes, ceux du projet inchangés ; onglet rouvert : de nouveau la dernière', k1.opts === 2 && k1.val === '' && k1.vols.includes('260000') && k2.vols.includes('220000') && !k2.vols.includes('260000') && k2.note && k2.cur === '150000,260000' && csvV1 && k3.val === '' && !k3.note, [k1, k2, csvV1, k3]);
+  await settle(A, B); await sleep(600); await settle(A, B);
+  const pB = (await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1') || {};
+  check('l\'autre poste reçoit la version archivée et la version actuelle', pB.volVer == 2 && (pB.volumeVersions || []).length === 1 && (pB.volumeVersions[0].volumes.find(x => x.year == 2028) || {}).volume == 220000 && ((pB.volumes || []).find(x => x.year == 2028) || {}).volume == 260000, { volVer: pB.volVer, vv: pB.volumeVersions, vols: pB.volumes });
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();

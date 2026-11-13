@@ -412,6 +412,22 @@ const MEASURE = `(() => {
   }));
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'notes_outil.png') });
   await page.evaluate(() => pmCloseTool());
+  // ─── V16 : versions des volumes ───
+  await page.evaluate(() => {
+    pmEditProject('Pp1'); pmCurProj.volumeVersions = [{ id: 'VVt', n: 1, from: '', to: '2026-11-01T10:00:00.000Z', volumes: [{ year: 2027, volume: 120000 }, { year: 2028, volume: 200000 }] }]; pmCurProj.volVer = 2;
+    pmShowTab('volumes'); if (window.pmVolToggle) pmVolToggle('VVt');
+  });
+  await page.waitForTimeout(200);
+  await chk('Volumes : « Nouvelle version » visible, version archivée ouverte en lecture seule, dans la largeur de l\'écran', () => page.evaluate(() => {
+    const nb = document.getElementById('pm-vol-newver'), t = document.querySelector('.pm-vol-t'), b = nb && nb.getBoundingClientRect(), r = t && t.getBoundingClientRect();
+    return !!nb && !!t && b.right <= innerWidth && r.right <= innerWidth + 0.5 && !document.querySelector('.pm-vol-arch input') && document.documentElement.scrollWidth <= innerWidth || { nb: !!nb, t: !!t, sw: document.documentElement.scrollWidth };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'volumes_versions.png') });
+  await page.evaluate(() => pmShowTab('production'));
+  await chk('Production : liste des versions des volumes, la dernière choisie, dans la largeur de l\'écran', () => page.evaluate(() => {
+    const s = document.getElementById('pm-cap-ver'), r = s && s.getBoundingClientRect();
+    return !!s && s.value === '' && s.options.length === 2 && r.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth || { s: !!s, sw: document.documentElement.scrollWidth };
+  }));
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }
