@@ -4,7 +4,8 @@ Application web en un seul fichier HTML, hors ligne, en français. Trois apps da
 **Suivi des Achats** (achats, budgets, livraisons, fournisseurs), **Engineering** (solutions, cahiers des charges,
 export Word) et **Project Master** (projets, actions, BOM, outils, planning).
 
-- **Version actuelle : V12** — téléphone : grande zone de commentaire dans la fenêtre du jalon, qui grandit avec la dictée, et BOM d'un produit en cartes avec libellés ; ordinateur inchangé (`versions/v12.html`).
+- **Version actuelle : V13** — documentation Engineering d'un produit : plusieurs fichiers (plusieurs PDF) par ligne de document, menu « Ouvrir quel fichier ? », un bouton par fichier dans Engineering ; synchro, ZIP et import inclus (`versions/v13.html`).
+- V12 — téléphone : grande zone de commentaire dans la fenêtre du jalon, qui grandit avec la dictée, et BOM d'un produit en cartes avec libellés ; ordinateur inchangé (`versions/v12.html`).
 - V11 — ouvrir une pièce jointe la télécharge sous son nom exact (le logiciel PDF du poste l'ouvre, comme SAP), « ⬆ Charger » de la documentation d'un produit met le fichier dans l'app, et un projet Engineering propose les plans du produit en un clic (`versions/v11.html`).
 - V10 — app installable sur l'écran d'accueil (manifeste + icônes, bouton « 📲 Installer l'app » dans le panneau ☁) et chargement d'un ZIP en choisissant ce qu'on prend, au lieu de tout écraser (`versions/v10.html`).
 - V9 — téléphone : liste des projets compacte, recherche réduite à l'icône 🔎, et dans le panneau ☁ les boutons Actualiser, Réglages et Plein écran ; ordinateur inchangé (`versions/v9.html`).
@@ -16,7 +17,7 @@ export Word) et **Project Master** (projets, actions, BOM, outils, planning).
 - V3 — vue téléphone comme une app : barre d'onglets en bas, pages en puces, listes en cartes, fenêtres qui montent du bas ; affichage ordinateur inchangé (`versions/v3.html`).
 - V2 — synchronisation Firebase : connexion Google, données partagées, images et pièces jointes dans Storage, hors ligne conservé (`versions/v2.html`).
 - V1 — état de départ, fichier fourni tel quel (`versions/v1.html`).
-- Fichier : `plateforme.html` (~12 850 lignes). Copies des versions : `versions/vN.html`. Tests : `cd tests && npm install && node test_sync.js && node test_mobile.js && node test_budget.js && node test_rappels.js && node test_install.js`
+- Fichier : `plateforme.html` (~12 900 lignes). Copies des versions : `versions/vN.html`. Tests : `cd tests && npm install && node test_sync.js && node test_mobile.js && node test_budget.js && node test_rappels.js && node test_install.js`
 - Dossier `functions/` : fonction quotidienne des rappels (à déployer une fois, voir JOURNAL). `manifest.webmanifest` et dossier `icons/` : installation de l'app sur l'écran d'accueil.
 - Lancer : en ligne (https) ou via http://localhost pour la synchro ; ouvert comme fichier, l'app marche en mode local seulement.
 - Données : copie locale dans le navigateur (localStorage + IndexedDB) ; avec connexion Google, synchronisées dans Firebase (projet `work-75094` : Firestore + Storage). Fichier `platform_data.zip` lié toujours possible.
