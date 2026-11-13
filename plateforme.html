@@ -5432,35 +5432,35 @@ function pmRenderActionPlan() {
     const cmId = `ap-cm-${x.src.type}-${x.src.pid||''}-${x.src.ti??''}-${x.src.si??''}-${x.src.ni??x.src.gi}`;
     pmRegisterCommentRef(cmId, { get:()=>pmActionGet(x.src), save:()=>pmSave() });
     const nbComments = (n.comments||[]).length;
-    return `<tr style="border-bottom:1px solid rgba(42,48,64,.3)">
-      <td style="padding:8px 10px">${prioBtns}</td>
-      <td style="padding:8px 10px">
-        <div style="font-size:12px;color:var(--text)">${pmEsc(n.text)}</div>
-        <div style="margin-top:4px;display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+    return `<tr class="pm-ap-row" data-u="${pmEsc(n.urgency||'')}" data-st="${pmEsc(n.status||'À faire')}" style="border-bottom:1px solid rgba(42,48,64,.3)">
+      <td class="pm-ap-prio" style="padding:8px 10px">${prioBtns}</td>
+      <td class="pm-ap-main" style="padding:8px 10px">
+        <div class="pm-ap-txt" style="font-size:12px;color:var(--text)">${pmEsc(n.text)}</div>
+        <div class="pm-ap-chips" style="margin-top:4px;display:flex;gap:5px;align-items:center;flex-wrap:wrap">
           ${pmJalonBadge(n.jalon, jpId)}
           <span onclick="pmOpenComments('${cmId}')" title="Commentaires" style="cursor:pointer;font-size:9px;font-weight:700;color:var(--muted);background:rgba(120,130,150,.12);border-radius:20px;padding:2px 8px">💬 ${nbComments}</span>
         </div>
       </td>
-      <td style="padding:8px 10px">
+      <td class="pm-ap-proj" style="padding:8px 10px">
         ${isGlobal
           ? `<span onclick="pmOpenLinkAction(${x.src.gi})" title="Cliquer pour rattacher à un projet" style="cursor:pointer;font-size:11px;color:var(--accent3);font-weight:600;border-bottom:1px dashed var(--accent3)">🔗 (Général) — lier</span>`
           : `<div style="font-size:11px;color:var(--text)">${pmEsc(x.projectName)}</div>${x.ownerName!=='—'?`<div style="font-size:9px;color:var(--muted)">${pmEsc(x.ownerName)}</div>`:''}`}
       </td>
-      <td style="padding:8px 10px">
-        <select onchange="pmActionWriteFromEl('${srcJson}','urgency',this.value)" style="background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 9px;color:${urgColor(n.urgency)};font-size:11px;font-weight:700">
+      <td class="pm-ap-urg" style="padding:8px 10px">
+        <select class="pm-ap-sel" onchange="pmActionWriteFromEl('${srcJson}','urgency',this.value)" style="background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 9px;color:${urgColor(n.urgency)};font-size:11px;font-weight:700">
           ${PM_URGENCY.map(s=>`<option ${s===n.urgency?'selected':''}>${s}</option>`).join('')}
         </select>
       </td>
-      <td style="padding:8px 10px">
-        <select onchange="pmActionWriteFromEl('${srcJson}','status',this.value)" style="background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 9px;color:${stColor(n.status)};font-size:11px;font-weight:700">
+      <td class="pm-ap-st" style="padding:8px 10px">
+        <select class="pm-ap-sel" onchange="pmActionWriteFromEl('${srcJson}','status',this.value)" style="background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 9px;color:${stColor(n.status)};font-size:11px;font-weight:700">
           ${PM_NOTE_ACTION_STATUS.map(s=>`<option ${s===(n.status||'À faire')?'selected':''}>${s}</option>`).join('')}
         </select>
       </td>
-      <td style="padding:8px 10px">
+      <td class="pm-ap-due" style="padding:8px 10px">
         <input type="date" value="${pmEsc(n.dueDate)}" onchange="pmActionWriteFromEl('${srcJson}','dueDate',this.value)"
           style="background:var(--surface2);border:1px solid ${late?'var(--danger)':'var(--border)'};border-radius:6px;padding:4px 7px;color:${late?'var(--danger)':'var(--text)'};font-size:11px;font-family:'DM Mono',monospace">
       </td>
-      <td style="padding:8px 10px;text-align:center">
+      <td class="pm-ap-act" style="padding:8px 10px;text-align:center">
         ${n.status!=='Fait'?`<button class="btn bs btn-sm" onclick="pmActionWriteFromEl('${srcJson}','status','Fait')" title="Clôturer">✓</button>`:'<span style="color:var(--accent);font-size:12px">✓ clôturée</span>'}
         <button class="set-del" onclick="pmActionDeleteFromEl('${srcJson}')">✕</button>
       </td>
@@ -5469,7 +5469,7 @@ function pmRenderActionPlan() {
 
   el.innerHTML = `
     <!-- Stats -->
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+    <div class="pm-ap-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
       <div class="stat-card"><div class="sl">Total actions</div><div class="sv" style="color:var(--accent)">${total}</div></div>
       <div class="stat-card"><div class="sl">Ouvertes</div><div class="sv" style="color:var(--accent2)">${open}</div></div>
       <div class="stat-card"><div class="sl">En retard</div><div class="sv" style="color:var(--danger)">${late}</div></div>
@@ -5482,7 +5482,7 @@ function pmRenderActionPlan() {
         <button class="btn bs btn-sm" onclick="pmOpenImportJson('plan')">📥 Charger JSON</button>
       </div>
       <div class="pb">
-        <div style="display:flex;gap:8px;flex-wrap:nowrap;align-items:center;margin-bottom:8px;overflow-x:auto">
+        <div class="pm-ap-new" style="display:flex;gap:8px;flex-wrap:nowrap;align-items:center;margin-bottom:8px;overflow-x:auto">
           <select id="pm-newact-project" onchange="pmNewActionProjChange()" style="flex-shrink:0;max-width:180px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--text);font-size:12px">
             <option value="">— Générale —</option>
             ${(pmDB.projects||[]).map(p=>`<option value="${p.id}">${pmEsc(p.name)}</option>`).join('')}
@@ -5491,7 +5491,7 @@ function pmRenderActionPlan() {
           <select id="pm-newact-urgency" style="flex-shrink:0;width:110px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--text);font-size:12px">${PM_URGENCY.map(s=>`<option ${s==='Moyenne'?'selected':''}>${s}</option>`).join('')}</select>
           <span style="flex-shrink:0;display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">📅<input type="date" id="pm-newact-due" style="width:130px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:5px 8px;color:var(--text);font-size:11px;font-family:'DM Mono',monospace"></span>
         </div>
-        <div style="display:flex;gap:8px">
+        <div class="pm-ap-new2" style="display:flex;gap:8px">
           <input type="text" id="pm-newact-text" placeholder="Décrire l'action à réaliser…" onkeydown="if(event.key==='Enter'){event.preventDefault();pmCreateAction();}"
             style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:12px">
           <button class="btn bp btn-sm" onclick="pmCreateAction()">＋ Créer l'action</button>
@@ -5502,7 +5502,7 @@ function pmRenderActionPlan() {
     <!-- Filtres + tableau -->
     <div class="panel">
       <div class="ph"><div class="pt"><div class="dot"></div>Toutes les actions</div>
-        <div style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;max-width:100%">
+        <div class="pm-ap-filters" style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;max-width:100%">
           <select onchange="pmActionFilter('sort',this.value)" style="flex-shrink:0;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:5px 9px;color:var(--text);font-size:11px">
             <option value="urgency" ${F.sort==='urgency'?'selected':''}>Tri : Urgence</option>
             <option value="due" ${F.sort==='due'?'selected':''}>Tri : Date clôture</option>
@@ -5519,7 +5519,7 @@ function pmRenderActionPlan() {
       </div>
       <div class="pb" style="padding:0">
         <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;min-width:840px">
+        <table class="pm-ap-table" style="width:100%;border-collapse:collapse;min-width:840px">
           <thead><tr style="border-bottom:1px solid var(--border)">
             <th style="width:24px;padding:7px 10px"></th>
             <th style="text-align:left;padding:7px 10px;color:var(--muted);font-size:10px;text-transform:uppercase">Action</th>
@@ -13156,6 +13156,74 @@ css.textContent = `
 }`;
 document.head.appendChild(css);
 window.pmVolVersions = { versions: vers, current: curN };   // tests, dépannage
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// PLAN D'ACTIONS : MISE EN PAGE (V17)
+// Avant : tableau de 7 colonnes d'au moins 840 px, texte sur une seule ligne (white-space:nowrap des cellules) ;
+// sur téléphone on ne voyait que le début du texte (le reste, urgence, statut, échéance, projet : défilement à droite) ;
+// sur ordinateur les listes urgence / statut étaient coupées (« Critiqu », « En c »), 3 filtres sur 4 cachés à droite.
+// Ordinateur : le texte passe à la ligne, urgence / statut / échéance en pastilles, 4 filtres visibles, bord gauche
+// coloré selon l'urgence, action faite ou N-A grisée. Téléphone : une carte par action — projet › outil, texte en
+// entier, jalon + 💬, urgence + statut, échéance, ✓ / ✕ ; formulaire « Nouvelle action » et filtres sur 2 colonnes.
+// Classes posées dans pmRenderActionPlan (même nombre de lignes) : pm-ap-*.
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const ARROW = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b93a7' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")";
+const U = { Critique: 'var(--danger)', Haute: 'var(--accent3)', Moyenne: 'var(--warn)', Basse: 'var(--muted)' };
+const css = document.createElement('style');
+css.textContent = `
+.pm-ap-table{min-width:0!important}
+.pm-ap-row > td{white-space:normal;vertical-align:middle}
+.pm-ap-main{min-width:240px}
+.pm-ap-txt{line-height:1.45}
+.pm-ap-proj{min-width:175px}
+.pm-ap-sel{width:auto!important;padding:3px 22px 3px 10px!important;background-image:${ARROW}!important;background-repeat:no-repeat!important;background-position:right 8px center!important;background-size:8px!important}
+.pm-ap-due input{width:auto!important}
+.pm-ap-act{white-space:nowrap!important}
+.pm-ap-filters{flex-wrap:wrap!important;overflow:visible!important;justify-content:flex-end}
+.pm-ap-filters select{width:auto!important;padding-right:24px!important;background-image:${ARROW}!important;background-repeat:no-repeat!important;background-position:right 8px center!important;background-size:8px!important}
+${Object.entries(U).map(([k, c]) => `.pm-ap-row[data-u="${k}"] > td:first-child{box-shadow:inset 3px 0 0 ${c}}`).join('\n')}
+.pm-ap-row[data-st="Fait"],.pm-ap-row[data-st="N-A"]{opacity:.55}
+@media (max-width:768px){
+  #pm-actionplan .pm-ap-table,#pm-actionplan .pm-ap-table tbody{display:block}
+  #pm-actionplan .pm-ap-table thead{display:none}
+  #pm-actionplan .pm-ap-table{padding:12px 8px 2px}
+  .pm-ap-row{display:flex!important;flex-wrap:wrap;align-items:center;gap:8px 7px;margin:0 0 10px;padding:12px 12px 11px 13px;border:1px solid var(--border)!important;border-left:3px solid var(--border)!important;border-radius:12px;background:var(--surface2)}
+  ${Object.entries(U).map(([k, c]) => `.pm-ap-row[data-u="${k}"]{border-left-color:${c}!important}`).join('\n  ')}
+  .pm-ap-row > td{display:block;padding:0!important;border:0!important;box-shadow:none!important;min-width:0}
+  .pm-ap-proj{order:1;flex:1 1 100%}
+  .pm-ap-proj > div:first-child{font-size:12.5px!important;font-weight:700}
+  .pm-ap-proj > div + div{font-size:11px!important;margin-top:1px}
+  .pm-ap-proj > span{font-size:12.5px!important}
+  .pm-ap-main{order:2;flex:1 1 100%}
+  .pm-ap-txt{font-size:14.5px!important}
+  .pm-ap-chips{margin-top:8px!important;gap:7px!important}
+  .pm-ap-chips > span{font-size:11px!important;padding:4px 9px!important}
+  .pm-ap-urg{order:3}
+  .pm-ap-st{order:4}
+  .pm-ap-due{order:5}
+  .pm-ap-prio{order:6;margin-left:auto}
+  .pm-ap-prio > div{flex-direction:row!important;gap:14px!important}
+  .pm-ap-prio button{font-size:13px!important;padding:4px!important}
+  .pm-ap-act{order:7;display:flex!important;align-items:center;gap:10px}
+  .pm-ap-sel{padding:5px 25px 5px 11px!important;background-position:right 9px center!important;background-size:10px!important}
+  .pm-ap-due input{padding:4px 11px!important;border-radius:20px!important}
+  .pm-ap-due input::-webkit-calendar-picker-indicator{display:none}
+  .pm-ap-new{flex-wrap:wrap!important;overflow:visible!important}
+  .pm-ap-new > select{flex:1 1 100%!important;max-width:none!important;width:100%!important}
+  .pm-ap-new > #pm-newact-urgency{flex:1 1 calc(50% - 4px)!important;width:auto!important;min-width:0}
+  .pm-ap-new > span{flex:1 1 calc(50% - 4px)!important;min-width:0}
+  .pm-ap-new > span input{flex:1 1 auto;width:100%!important;min-width:0}
+  .pm-ap-new2{flex-wrap:wrap}
+  .pm-ap-new2 > input{flex:1 1 100%!important}
+  .pm-ap-new2 > .btn{flex:1 1 100%;justify-content:center}
+  .pm-ap-filters{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px!important;width:100%}
+  .pm-ap-filters select{width:100%!important;min-width:0}
+}`;
+document.head.appendChild(css);
 })();
 </script>
 </body>

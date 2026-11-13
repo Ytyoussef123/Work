@@ -774,6 +774,18 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   const pB = (await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1') || {};
   check('l\'autre poste reçoit la version archivée et la version actuelle', pB.volVer == 2 && (pB.volumeVersions || []).length === 1 && (pB.volumeVersions[0].volumes.find(x => x.year == 2028) || {}).volume == 220000 && ((pB.volumes || []).find(x => x.year == 2028) || {}).volume == 260000, { volVer: pB.volVer, vv: pB.volumeVersions, vols: pB.volumes });
 
+  console.log('22. Plan d\'actions : mise en page sur ordinateur (V17)');
+  await A.evaluate(() => { switchApp('projects'); pmDB.actions.unshift({ id: 'AV17', text: 'Action V17 au texte assez long pour passer à la ligne dans la colonne Action du plan d\'actions sans élargir le tableau', ts: Date.now(), jalon: '', kind: 'Action', status: 'En cours', urgency: 'Critique', dueDate: '2026-12-01', comments: [] }); pmGo('actions'); });
+  await A.waitForTimeout(300);
+  const apd = await A.evaluate(() => {
+    const host = document.getElementById('pm-actionplan'), panels = host.querySelectorAll('.panel'), list = panels[panels.length - 1], pr = list.getBoundingClientRect();
+    const filt = [...list.querySelectorAll('.ph select')].map(s => s.getBoundingClientRect()), rows = [...host.querySelectorAll('tbody tr')].filter(r => r.querySelector('select'));
+    return { n: rows.length, filters: filt.length, filtIn: filt.every(r => r.right <= pr.right + 1 && r.left >= pr.left - 1), delIn: rows.every(r => r.querySelector('.set-del').getBoundingClientRect().right <= pr.right + 1),
+      sel: Math.min(...rows.flatMap(r => [...r.querySelectorAll('select')].map(s => Math.round(s.getBoundingClientRect().width)))) };
+  });
+  check('Plan d\'actions (ordinateur) : les 4 filtres visibles, urgence et statut en entier, ✕ de chaque ligne dans le panneau (avant : 3 filtres et ✕ cachés à droite, « Critiqu », « En c »)', apd.n > 0 && apd.filters === 4 && apd.filtIn && apd.delIn && apd.sel >= 70, apd);
+  await A.evaluate(() => { pmDB.actions = pmDB.actions.filter(a => a.id !== 'AV17'); pmRenderActionPlan(); });
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();

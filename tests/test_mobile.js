@@ -428,6 +428,17 @@ const MEASURE = `(() => {
     const s = document.getElementById('pm-cap-ver'), r = s && s.getBoundingClientRect();
     return !!s && s.value === '' && s.options.length === 2 && r.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth || { s: !!s, sw: document.documentElement.scrollWidth };
   }));
+  // ─── V17 : Plan d'actions en cartes ───
+  await page.evaluate(() => { switchApp('projects'); pmGo('actions'); window.scrollTo(0, 0); });
+  await page.waitForTimeout(200);
+  await chk('Plan d\'actions : une carte par action — texte entier, urgence, statut, échéance, ✓ et ✕ dans l\'écran ; filtres et « Nouvelle action » aussi (avant : texte coupé, le reste à droite)', () => page.evaluate(() => {
+    const W = innerWidth, host = document.getElementById('pm-actionplan'), rows = [...host.querySelectorAll('tbody tr')].filter(r => r.querySelector('select'));
+    const out = el => { const r = el.getBoundingClientRect(); return r.width > 0 && (r.right > W + 0.5 || r.left < -0.5); };
+    const ctrls = [...host.querySelectorAll('select, input, button')].filter(e => e.offsetParent && out(e)).length;
+    const txt = rows.every(r => { const t = r.querySelector('td:nth-child(2) > div'); return t && t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().right <= W; });
+    return rows.length > 0 && ctrls === 0 && txt && document.documentElement.scrollWidth <= W || { n: rows.length, ctrls, txt };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'plan_actions.png') });
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }
