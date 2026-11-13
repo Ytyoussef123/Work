@@ -7084,19 +7084,19 @@ function pmNotesUI(ctx, owner) {
         const nbComments = (n.comments||[]).length;
         // En-tête
         let head = pmJalonBadge(n.jalon, pickerId);
-        head += `<span style="font-size:9px;font-weight:700;color:${isAction?'var(--accent3)':'var(--muted)'};background:${isAction?'rgba(255,107,53,.12)':'rgba(120,130,150,.12)'};border-radius:20px;padding:2px 8px">${isAction?'⚡ ACTION':'📝 NOTE'}</span>`;
+        head += `<span class="pm-note-kind" style="font-size:9px;font-weight:700;color:${isAction?'var(--accent3)':'var(--muted)'};background:${isAction?'rgba(255,107,53,.12)':'rgba(120,130,150,.12)'};border-radius:20px;padding:2px 8px">${isAction?'⚡ ACTION':'📝 NOTE'}</span>`;
         if (isAction) {
-          head += `<select onchange="pmNoteField('${ctx}',${ni},'status',this.value)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:${actStColor(n.status)};font-size:10px;font-weight:700">${PM_NOTE_ACTION_STATUS.map(s=>`<option ${s===n.status?'selected':''}>${s}</option>`).join('')}</select>`;
-          head += `<select onchange="pmNoteField('${ctx}',${ni},'urgency',this.value)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:${urgColor(n.urgency)};font-size:10px;font-weight:700">${PM_URGENCY.map(s=>`<option ${s===n.urgency?'selected':''}>${s}</option>`).join('')}</select>`;
-          head += `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:${late?'var(--danger)':'var(--muted)'}">${late?'⏰':'📅'}<input type="date" value="${pmEsc(n.dueDate)}" onchange="pmNoteField('${ctx}',${ni},'dueDate',this.value)" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 6px;color:${late?'var(--danger)':'var(--text)'};font-size:10px;font-family:'DM Mono',monospace" title="Date de clôture"></span>`;
+          head += `<i class="pm-note-br"></i><select class="pm-note-sel" onchange="pmNoteField('${ctx}',${ni},'status',this.value)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:${actStColor(n.status)};font-size:10px;font-weight:700">${PM_NOTE_ACTION_STATUS.map(s=>`<option ${s===n.status?'selected':''}>${s}</option>`).join('')}</select>`;
+          head += `<select class="pm-note-sel" onchange="pmNoteField('${ctx}',${ni},'urgency',this.value)" style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2px 8px;color:${urgColor(n.urgency)};font-size:10px;font-weight:700">${PM_URGENCY.map(s=>`<option ${s===n.urgency?'selected':''}>${s}</option>`).join('')}</select>`;
+          head += `<i class="pm-note-br"></i><span class="pm-note-due" style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:${late?'var(--danger)':'var(--muted)'}">${late?'⏰':'📅'}<input type="date" value="${pmEsc(n.dueDate)}" onchange="pmNoteField('${ctx}',${ni},'dueDate',this.value)" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:2px 6px;color:${late?'var(--danger)':'var(--text)'};font-size:10px;font-family:'DM Mono',monospace" title="Date de clôture"></span>`;
         }
         // Bouton commentaires
-        head += `<span onclick="pmOpenComments('${commentId}')" title="Commentaires" style="cursor:pointer;font-size:9px;font-weight:700;color:var(--muted);background:rgba(120,130,150,.12);border-radius:20px;padding:2px 8px">💬 ${nbComments}</span>`;
-        return `<div style="display:flex;gap:8px;align-items:flex-start;padding:9px 11px;background:var(--surface2);border-radius:8px;margin-bottom:6px;border-left:3px solid ${isAction?urgColor(n.urgency):'var(--accent2)'}">
-          <div style="flex:1">
-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">${head}</div>
-            <div style="font-size:12px;color:var(--text);white-space:pre-wrap">${pmEsc(n.text)}</div>
-            <div style="font-size:10px;color:var(--muted);font-family:'DM Mono',monospace;margin-top:4px">${dstr}</div>
+        head += `<span class="pm-note-com" onclick="pmOpenComments('${commentId}')" title="Commentaires" style="cursor:pointer;font-size:9px;font-weight:700;color:var(--muted);background:rgba(120,130,150,.12);border-radius:20px;padding:2px 8px">💬 ${nbComments}</span>`;
+        return `<div class="pm-note" style="display:flex;gap:8px;align-items:flex-start;padding:9px 11px;background:var(--surface2);border-radius:8px;margin-bottom:6px;border-left:3px solid ${isAction?urgColor(n.urgency):'var(--accent2)'}">
+          <div style="flex:1;min-width:0">
+            <div class="pm-note-head" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px">${head}</div>
+            <div class="pm-note-txt" style="font-size:12px;color:var(--text);white-space:pre-wrap">${pmEsc(n.text)}</div>
+            <div class="pm-note-ts" style="font-size:10px;color:var(--muted);font-family:'DM Mono',monospace;margin-top:4px">${dstr}</div>
           </div>
           <button class="set-del" onclick="pmDeleteNote('${ctx}',${ni})">✕</button>
         </div>`;
@@ -7732,7 +7732,7 @@ function pmOpenMsPopup(ctx, mi) {
       <select id="ms-pop-status" style="width:100%">${statusOpts}</select></div>
     <div class="fg" style="margin-bottom:16px"><label>Documents de l'équipement</label>
       <div style="display:flex;gap:6px;align-items:center">
-        <select id="ms-pop-folder" style="flex:1;min-width:0" onchange="pmMsListDocs('${ctx}')">${pmEquipTemplate().map(s=>`<option ${pmMsFolderFor(m.label)===s?'selected':''}>${pmEsc(s)}</option>`).join('')}</select>
+        <select id="ms-pop-folder" style="flex:1;min-width:0" onchange="if(window.pmMsSetFolder)pmMsSetFolder('${ctx}',${mi},this.value);pmMsListDocs('${ctx}')">${pmEquipTemplate().map(s=>`<option ${(pmEquipTemplate().includes(m.folder)?m.folder:pmMsFolderFor(m.label))===s?'selected':''}>${pmEsc(s)}</option>`).join('')}</select>
         <button class="btn bs btn-sm" onclick="pmMsUploadDoc('${ctx}')" title="Copier un fichier dans ce dossier de l'équipement">⬆ Charger</button>
       </div>
       <div id="ms-pop-docs" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;max-height:150px;overflow:auto;font-size:11.5px;color:var(--muted)"></div>
@@ -7871,11 +7871,11 @@ async function pmMsUploadDoc(ctx) {
 function pmMsCommentsHtml(ctx, mi) {
   const m = (pmNoteOwner(ctx)?.milestones||[])[mi]; const list = (m && m.comments) || [];
   if (!list.length) return '<div style="font-size:11.5px;color:var(--muted)">Aucun commentaire.</div>';
-  return list.map((c, ci) => ({ c, ci })).reverse().map(({ c, ci }) => {
+  return list.map((c, ci) => ({ c, ci })).sort((a, b) => (Date.parse(b.c.date) || 0) - (Date.parse(a.c.date) || 0) || b.ci - a.ci).map(({ c, ci }) => {   // V15 : par date, le plus récent en haut
     const d = new Date(c.date), ds = isNaN(d) ? '' : d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
     return `<div style="border:1px solid var(--border);border-radius:7px;padding:7px 9px;background:var(--surface2)">
       <div style="display:flex;justify-content:space-between;gap:8px;font-family:'DM Mono',monospace;font-size:10px;color:var(--muted);margin-bottom:3px"><span onclick="pmMsEditCommentDate('${ctx}',${mi},${ci},this)" title="Modifier la date" style="cursor:pointer">${ds}</span>
-        <button type="button" onclick="pmMsDelComment('${ctx}',${mi},${ci})" title="Supprimer" style="background:none;border:0;color:var(--muted);cursor:pointer;font-size:11px;padding:0">✕</button></div>
+        <span class="ms-c-act" style="display:flex;gap:12px;align-items:center"><button type="button" onclick="if(window.pmMsEditComment)pmMsEditComment('${ctx}',${mi},${ci},this)" title="Modifier le texte (la date ne change pas)" style="background:none;border:0;color:var(--muted);cursor:pointer;font-size:11px;padding:0">✎</button><button type="button" onclick="pmMsDelComment('${ctx}',${mi},${ci})" title="Supprimer" style="background:none;border:0;color:var(--muted);cursor:pointer;font-size:11px;padding:0">✕</button></span></div>
       <div style="font-size:12px;color:var(--text);white-space:pre-wrap;word-break:break-word">${pmEsc(c.text)}</div></div>`;
   }).join('');
 }
@@ -12977,6 +12977,64 @@ const css = document.createElement('style');
 css.textContent = '.pm-achbud-note{font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.5}.pm-achbud-grid{margin-bottom:0}';
 document.head.appendChild(css);
 window.pmAchBud = { projects: achProjects, budgets: budgetsOf, refresh };   // tests, dépannage
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// OUTILS & SUIVI : FENÊTRE DU JALON ET NOTES (V15)
+// 1) « Documents de l'équipement » : le dossier choisi est gardé dans le jalon (m.folder), enregistré tout de suite ;
+//    avant, il n'était gardé nulle part : à chaque ouverture, il était déduit du nom du jalon (souvent « 11- Others »).
+// 2) Commentaires du jalon : triés par date, le plus récent en haut (pmMsCommentsHtml) ; ✎ corrige le texte d'un
+//    commentaire SANS changer sa date (ni marque « modifié »).
+// 3) Notes et actions d'un outil : statut, urgence et échéance en petites pastilles (avant : barres pleine largeur,
+//    à cause de la largeur 100 % de tous les champs) ; sur téléphone, une carte claire : jalon et type avec ✕ dans
+//    le coin, statut + urgence sur une ligne, échéance + 💬, puis le texte en plus grand.
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const msOf = (ctx, mi) => { try { return (pmNoteOwner(ctx).milestones || [])[mi] || null; } catch (e) { return null; } };
+const save = () => { try { if (typeof pmCurProj !== 'undefined' && pmCurProj && pmCurProj.id) pmMsPersist(); } catch (e) {} };
+window.pmMsSetFolder = function (ctx, mi, v) { const m = msOf(ctx, mi); if (!m || !v) return; m.folder = v; save(); };
+window.pmMsEditComment = function (ctx, mi, ci, btn) {
+  const m = msOf(ctx, mi), c = m && (m.comments || [])[ci]; if (!c) return;
+  const card = btn && btn.closest('#ms-pop-clist > div'), box = card && card.lastElementChild; if (!box || box.querySelector('textarea')) return;
+  box.innerHTML = '<textarea rows="3" style="width:100%;min-height:72px;resize:vertical;white-space:pre-wrap"></textarea>' +
+    '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px"><button type="button" class="btn bs btn-sm" data-x>Annuler</button><button type="button" class="btn bp btn-sm" data-ok>✓ Enregistrer</button></div>';
+  const ta = box.querySelector('textarea'); ta.value = c.text || '';
+  const fit = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, Math.round(innerHeight * 0.5)) + 'px'; };
+  ta.addEventListener('input', fit); fit(); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  const done = ok => {
+    const v = ta.value.trim();
+    if (ok && v && v !== c.text) { c.text = v; save(); }   // la date du commentaire ne change pas
+    pmMsRefreshComments(ctx, mi);
+  };
+  box.querySelector('[data-ok]').onclick = () => done(true);
+  box.querySelector('[data-x]').onclick = () => done(false);
+  ta.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); done(true); } });
+};
+const ARROW = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b93a7' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")";
+const css = document.createElement('style');
+css.textContent = `
+.pm-note-sel{width:auto!important;max-width:100%;padding:3px 22px 3px 10px!important;background-image:${ARROW}!important;background-repeat:no-repeat!important;background-position:right 8px center!important;background-size:8px!important}
+.pm-note-due input{width:auto!important}
+.pm-note-br{display:none}
+@media (max-width:768px){
+  .pm-note{position:relative;padding:12px 12px 11px 13px!important;border-radius:12px!important;margin-bottom:10px!important}
+  .pm-note > .set-del{position:absolute;top:6px;right:5px}
+  .pm-note-head{gap:7px!important;padding-right:26px;margin-bottom:10px!important}
+  .pm-note-br{display:block;flex-basis:100%;height:0}
+  .pm-note-head > span:first-child,.pm-note-kind,.pm-note-com{font-size:11px!important;padding:4px 9px!important}
+  .pm-note-head > span:first-child{max-width:calc(100% - 92px);overflow:hidden;text-overflow:ellipsis}   /* jalon long : « … » plutôt qu'une ligne de plus */
+  .pm-note-sel{padding:5px 25px 5px 11px!important;background-position:right 9px center!important;background-size:10px!important}
+  .pm-note-due{font-size:15px!important;gap:5px!important}
+  .pm-note-due input{padding:4px 11px!important;border-radius:20px!important}
+  .pm-note-due input::-webkit-calendar-picker-indicator{display:none}   /* toucher la date ouvre le calendrier */
+  .pm-note-txt{font-size:14.5px!important;line-height:1.45}
+  .pm-note-ts{font-size:11px!important;margin-top:7px!important}
+  #ms-pop-clist .ms-c-act{gap:18px!important}
+  #ms-pop-clist .ms-c-act button{font-size:16px!important;padding:2px 4px!important}
+}`;
+document.head.appendChild(css);
 })();
 </script>
 </body>

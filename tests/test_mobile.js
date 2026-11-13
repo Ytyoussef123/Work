@@ -402,6 +402,16 @@ const MEASURE = `(() => {
     return same && c.every(x => x.getBoundingClientRect().right <= innerWidth + 0.5) && document.documentElement.scrollWidth <= innerWidth || { n: c.length, same, sw: document.documentElement.scrollWidth };
   }));
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'pm_budget_achats.png') });
+  // ─── V15 : notes / actions d'un outil en cartes claires ───
+  await page.evaluate(() => { pmShowTab('outils'); pmEditTool(0); const n = document.querySelector('.pm-note'); (n || document.body).scrollIntoView({ block: 'center' }); });
+  await page.waitForTimeout(200);
+  await chk('notes d\'un outil : carte claire — statut et urgence en pastilles (pas en barres pleine largeur), ✕ dans le coin, rien ne dépasse', () => page.evaluate(() => {
+    const c = [...document.querySelectorAll('.pm-note')].find(x => x.querySelector('.pm-note-sel')); if (!c) return { carte: false };
+    const cr = c.getBoundingClientRect(), sel = [...c.querySelectorAll('.pm-note-sel')].map(s => s.getBoundingClientRect()), del = c.querySelector(':scope > .set-del').getBoundingClientRect();
+    return sel.length === 2 && sel.every(r => r.width < cr.width * 0.6) && del.top < cr.top + 20 && del.right <= cr.right && cr.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth || { sel: sel.map(r => r.width), carte: cr.width, del: [del.top - cr.top, cr.right - del.right] };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'notes_outil.png') });
+  await page.evaluate(() => pmCloseTool());
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

@@ -703,6 +703,43 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
     check('chargement d\'un ZIP en choisissant (V10) : le projet pris revient avec TOUS les fichiers de ses lignes', proposed && back.every(Boolean), [proposed, back]);
   }
 
+  console.log('20. Outils & Suivi : commentaires du jalon triés et corrigés, dossier de documents gardé, notes compactes (V15)');
+  await settle(A, B);
+  await A.evaluate(() => {
+    switchApp('projects'); pmEditProject('Pp1'); pmShowTab('outils');
+    const m = pmCurProj.tools[0].milestones[0];   // ajoutés dans le désordre
+    m.comments = [{ text: 'Cotation reçue (03/03)', date: '2026-03-03T17:18:00.000Z' }, { text: 'Cotation séparée (12/03)', date: '2026-03-12T12:00:00.000Z' }, { text: 'TO incomplet (11/03)', date: '2026-03-11T13:23:00.000Z' }];
+    pmMsPersist(); pmOpenMsPopup('t:0', 0); pmMsToggleComments('t:0', 0);
+  });
+  await A.waitForTimeout(200);
+  const ordV15 = await A.evaluate(() => [...document.querySelectorAll('#ms-pop-clist > div')].map(d => d.lastElementChild.textContent.trim()));
+  check('commentaires du jalon : triés par date, le plus récent en haut (même ajoutés dans le désordre)', ordV15.join('|') === 'Cotation séparée (12/03)|TO incomplet (11/03)|Cotation reçue (03/03)', ordV15);
+  const editBtn = '#ms-pop-clist > div:nth-child(2) button[title^="Modifier le texte"]', hasEdit = !!(await A.$(editBtn));
+  let preV15 = null;
+  if (hasEdit) {
+    await A.click(editBtn); preV15 = await A.inputValue('#ms-pop-clist textarea');
+    await A.fill('#ms-pop-clist textarea', 'TO incomplet de Ford : offre étude + réalisation séparées (11/03)');
+    await A.click('#ms-pop-clist [data-ok]'); await A.waitForTimeout(300);
+  }
+  const ed = await A.evaluate(() => { const c = pmCurProj.tools[0].milestones[0].comments, sv = JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1').tools[0].milestones[0].comments;
+    return { n: c.length, c: c.find(x => /Ford/.test(x.text)), sv: !!sv.find(x => /Ford/.test(x.text)), old: c.some(x => x.text === 'TO incomplet (11/03)'), pos: [...document.querySelectorAll('#ms-pop-clist > div')].findIndex(d => /Ford/.test(d.textContent)) }; });
+  check('✎ : le texte d\'un commentaire se corrige (prérempli), sa date ne change pas, il reste à sa place, enregistré', hasEdit && preV15 === 'TO incomplet (11/03)' && ed.n === 3 && !ed.old && !!ed.c && ed.c.date === '2026-03-11T13:23:00.000Z' && ed.sv && ed.pos === 1, [hasEdit, preV15, ed]);
+  await A.selectOption('#ms-pop-folder', '2- Offres');
+  await A.evaluate(() => { document.getElementById('ms-popup-ov').remove(); pmOpenMsPopup('t:0', 0); });
+  const fo = await A.evaluate(() => ({ sel: document.getElementById('ms-pop-folder').value, sv: JSON.parse(localStorage.getItem('pm_db')).projects.find(p => p.id === 'Pp1').tools[0].milestones[0].folder }));
+  check('« Documents de l\'équipement » : le dossier choisi est gardé (fenêtre rouverte) et enregistré (avant : revenait au dossier déduit du nom)', fo.sel === '2- Offres' && fo.sv === '2- Offres', fo);
+  await A.evaluate(() => document.getElementById('ms-popup-ov').remove());
+  await settle(A, B); await sleep(600); await settle(A, B);
+  const mB = ((((await getLS(B, 'pm_db')).projects.find(p => p.id === 'Pp1').tools || [])[0] || {}).milestones || [])[0] || {};
+  check('l\'autre poste reçoit le commentaire corrigé (sans l\'ancien texte en double) et le dossier choisi', (mB.comments || []).length === 3 && mB.comments.some(c => /Ford/.test(c.text) && c.date === '2026-03-11T13:23:00.000Z') && !mB.comments.some(c => c.text === 'TO incomplet (11/03)') && mB.folder === '2- Offres', mB);
+  await A.evaluate(() => { const t = pmCurProj.tools[0]; t.notes = t.notes || []; t.notes.unshift({ id: 'NV15', text: 'Action de test V15', ts: Date.now(), jalon: '', kind: 'Action', status: 'À faire', urgency: 'Critique', dueDate: '2026-12-01', comments: [] }); pmEditTool(0); });
+  await A.waitForTimeout(200);
+  const nt = await A.evaluate(() => { const c = [...document.querySelectorAll('.pm-note')].find(x => /Action de test V15/.test(x.textContent)); if (!c) return null;
+    const h = c.querySelector('.pm-note-head'), kids = [...h.children].filter(k => k.offsetParent), sel = [...c.querySelectorAll('.pm-note-sel')].map(s => Math.round(s.getBoundingClientRect().width));
+    return { sel, oneLine: Math.max(...kids.map(k => k.getBoundingClientRect().top)) < Math.min(...kids.map(k => k.getBoundingClientRect().bottom)) }; });
+  check('notes d\'un outil (ordinateur) : statut et urgence en petites pastilles, tout l\'en-tête sur une ligne (avant : barres pleine largeur)', !!nt && nt.sel.length === 2 && nt.sel.every(x => x < 160) && nt.oneLine, nt);
+  await A.evaluate(() => { pmCurProj.tools[0].notes = pmCurProj.tools[0].notes.filter(n => n.id !== 'NV15'); pmCloseTool(); });
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();
