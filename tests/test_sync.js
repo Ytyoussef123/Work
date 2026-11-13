@@ -308,6 +308,16 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   check('Storage rétabli : « synchronisé »', (await A.evaluate(() => fbSync.state())) === 'ok', await A.evaluate(() => fbSync.state()));
   r = await waitAtt(A, '☁ en ligne');
   check('Storage rétabli : « ☁ en ligne » à côté du fichier', r === true, r);
+  // Panneau ☁ (V9) : les boutons du téléphone sont remis à chaque dessin, à leur place ; masqués sur ordinateur
+  r = await A.evaluate(async () => {
+    document.getElementById('fb-btn').click(); await new Promise(res => setTimeout(res, 0));
+    const row = document.querySelector('#fb-pop .fb-row'), keys = [...row.children].map(b => b.dataset.a || 'm:' + b.dataset.m).join(',');
+    const hidden = [...row.querySelectorAll('.m-pop')].every(b => getComputedStyle(b).display === 'none');
+    document.getElementById('fb-pop').classList.remove('on');
+    return { keys, hidden, fs: !!document.fullscreenEnabled };
+  });
+  check('panneau ☁ : « ↻ Actualiser » après « Synchroniser », « ⚙ Réglages » après « 🔔 Rappels » ; masqués sur ordinateur',
+    r.keys === 'now,m:reload,reset,rappels,m:reglages,' + (r.fs ? 'm:fs,' : '') + 'out' && r.hidden, r);
   // e) B : fichier absent de ce poste → ouvert depuis sa copie en ligne
   await idb(B, 'del', id1);
   await B.evaluate(() => { switchApp('achats'); editRow('IDPJ1'); });

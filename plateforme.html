@@ -11801,7 +11801,7 @@ const css = document.createElement('style');
 css.id = 'm-style';
 css.textContent = `
 :root{--m-tab:58px;--m-hd:54px}
-#m-tabbar,#m-sync{display:none}
+#m-tabbar,#m-sync,#m-q,#m-qx,#fb-pop .m-pop{display:none}
 @media (max-width:768px){
   html{touch-action:manipulation}
   body{-webkit-tap-highlight-color:transparent;overscroll-behavior-y:none}
@@ -11814,7 +11814,14 @@ css.textContent = `
   .topbar-title{flex:1 1 auto;min-width:0;font-size:17px}
   .topbar-title > span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #main-achats .topbar-r,#engCrumb{display:none}
-  #main-projects .topbar-r{flex:0 1 46%}
+  /* Projets : seulement 🔎 dans la barre ; le toucher ouvre la boîte sur toute la barre (titre masqué), ✕ la referme
+     (V9 ; avant : boîte sur 46 % de la barre, tronquée en « 🔎 Recherch ») */
+  #main-projects .topbar-r{flex:0 0 auto;gap:6px}
+  #m-q,#m-qx{display:flex;flex:0 0 38px;width:38px;height:38px;align-items:center;justify-content:center;border-radius:12px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);font-size:16px;cursor:pointer;padding:0}
+  #main-projects .topbar-r #pmSearch,#m-qx,#main-projects .topbar.m-q-open .topbar-title,#main-projects .topbar.m-q-open #m-q{display:none}
+  #main-projects .topbar.m-q-open .topbar-r{flex:1 1 auto;min-width:0}
+  #main-projects .topbar.m-q-open #pmSearch{display:block;flex:1 1 auto}
+  #main-projects .topbar.m-q-open #m-qx{display:flex}
   .hp-top{position:sticky;top:0;z-index:110;height:auto;min-height:calc(var(--m-hd) + ${SAFE_T});padding:${SAFE_T} 54px 0 12px;gap:8px;background:color-mix(in srgb,var(--surface) 86%,transparent);${BLUR}}
   .hp-top .xa-user,.hp-kbd,.hp-searchbtn > span:not(:first-child){display:none}
   .hp-searchbtn{flex:0 0 40px;width:40px;height:40px;padding:0;justify-content:center;margin-left:auto}
@@ -11843,6 +11850,12 @@ css.textContent = `
   .toast{left:12px;right:12px;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px);justify-content:center;pointer-events:none}   /* caché, il descend sur la barre d'onglets : il ne doit pas capter les touches (V7) */
   #fb-banner{top:auto!important;bottom:calc(var(--m-tab) + ${SAFE_B} + 10px)!important}
   #fb-pop{top:calc(${SAFE_T} + 52px)!important;left:auto!important;right:8px!important}
+  /* Panneau ☁ : boutons deux par deux, « Se connecter » et « Reprendre les données de l'équipe » sur toute la largeur ;
+     + « ↻ Actualiser », « ⚙ Réglages », « ⛶ Plein écran » (V9, popExtras) */
+  #fb-pop .fb-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  #fb-pop .fb-row > .btn{justify-content:center;min-width:0;white-space:normal;text-align:center;line-height:1.25}
+  #fb-pop .fb-row > [data-a="in"],#fb-pop .fb-row > [data-a="reset"]{grid-column:1/-1}
+  #fb-pop .m-pop{display:inline-flex}
 
   /* Fenêtres : feuilles qui montent du bas */
   .overlay{align-items:flex-end!important}
@@ -11884,6 +11897,20 @@ css.textContent = `
   .pm-tabpane[data-tab="outils"] button[onclick="pmExportToolsXlsx()"]::after{content:"⬇ Excel"}
   .pm-tabpane[data-tab="outils"] button[onclick="pmAddPack()"]::after{content:"📦 Pack"}
   .pm-tabpane[data-tab="outils"] button[onclick="pmAddTool()"]::after{content:"＋ Outil"}
+  /* Projets › liste : « ＋ Projet · 📁 Dossier · ⚙ Sous-dossiers » sur une ligne, « Tous statuts | Tous clients »
+     côte à côte sur la suivante (V9 ; avant 4 lignes : chaque filtre prenait toute la largeur).
+     ::after (order 1, toute la largeur, hauteur 0) = retour à la ligne forcé entre boutons et filtres */
+  #pproj-list > div:first-child{gap:4px 6px!important;margin-bottom:10px!important}
+  #pproj-list > div:first-child::after{content:"";flex:0 0 100%;order:1}
+  #pproj-list > div:first-child > .btn{flex:1 1 auto;justify-content:center;padding:8px 8px;min-width:0}
+  #pproj-list > div:first-child > select{order:2;flex:1 1 0;width:auto;min-width:0}
+  #pproj-list > div:first-child > button[onclick="pmNewProject()"]{font-size:0!important;gap:0}
+  #pproj-list > div:first-child > button[onclick="pmNewProject()"]::after{content:"＋ Projet";font-size:12px;font-weight:600}
+  #pmRootLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}   /* dossier lié : son nom, coupé « … » */
+  #pproj-list > div:first-child:has(#pmRootLabel:not(.m-def)) > .btn{flex:0 0 auto}   /* dossier lié : son bouton prend la place restante */
+  #pproj-list > div:first-child:has(#pmRootLabel:not(.m-def)) > button[onclick="pmPickRootDir()"]{flex:1 1 0}
+  #pmRootLabel.m-def{font-size:0}
+  #pmRootLabel.m-def::after{content:"📁 Dossier";font-size:12px}
   [style*="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"]{grid-template-columns:minmax(0,1fr)!important}
   .search-bar .search-wrap{flex:1 1 100%;max-width:none}
   .search-bar select{flex:1 1 calc(50% - 5px);width:auto!important}
@@ -12106,6 +12133,83 @@ function watchPreviews() {
   MQ.addEventListener('change', () => ws.forEach(fitPreview));
 }
 
+// ─── PROJECT MASTER : recherche réduite à 🔎 dans la barre du haut (V9) ─────
+// Toucher 🔎 ouvre la boîte sur toute la barre (titre masqué) ; ✕ ou Échap la vide et la referme ; vide, elle se
+// referme aussi quand on touche ailleurs ; choisir un résultat la referme. Ordinateur : boîte d'origine, inchangée.
+function searchIcon() {
+  const inp = $('pmSearch'), box = inp && inp.parentElement, bar = box && box.closest('.topbar'); if (!bar) return;
+  const mk = (id, txt, label) => { const b = document.createElement('button'); b.type = 'button'; b.id = id; b.textContent = txt; b.setAttribute('aria-label', label); return b; };
+  const q = mk('m-q', '🔎', 'Rechercher'), x = mk('m-qx', '✕', 'Fermer la recherche');
+  box.insertBefore(q, inp); box.appendChild(x);
+  const close = () => { bar.classList.remove('m-q-open'); if (inp.value) { inp.value = ''; pmGlobalSearch(''); } inp.blur(); };
+  q.addEventListener('click', () => { bar.classList.add('m-q-open'); inp.focus(); });
+  x.addEventListener('mousedown', e => e.preventDefault());   // le champ garde le focus : vide, il se refermerait avant le clic et 🔎 prendrait la touche
+  x.addEventListener('click', close);
+  inp.addEventListener('blur', () => { if (!inp.value.trim()) bar.classList.remove('m-q-open'); });
+  inp.addEventListener('keydown', e => { if (e.key === 'Escape' && MQ.matches) close(); });
+  inp.addEventListener('input', () => { if (MQ.matches) window.scrollTo(0, 0); });   // les résultats s'affichent en haut du tableau de bord
+  const res = $('pmSearchResults');
+  if (res) res.addEventListener('click', e => { if (MQ.matches && e.target.closest('[onclick^="pmEditProject"]')) close(); });
+}
+
+// ─── PLEIN ÉCRAN (V9) : ☁ › « ⛶ Plein écran ». Une fois activé, il revient au premier toucher quand le navigateur
+//     l'a quitté (rechargement, passage par une autre app) ; ☁ › « ⛶ Écran normal » le désactive. Réglage propre à
+//     l'appareil. Pas proposé sans l'API (iPhone : il faut l'app installée sur l'écran d'accueil). ──
+const FS_KEY = 'm_plein_ecran';
+const fsOK = () => !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const fsOn = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+const fsWanted = () => { try { return localStorage.getItem(FS_KEY) === '1'; } catch (e) { return false; } };
+function fsEnter() {
+  const d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen;
+  if (f && !fsOn()) try { const p = f.call(d, { navigationUI: 'hide' }); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+function fsExit() {
+  const f = document.exitFullscreen || document.webkitExitFullscreen;
+  if (f && fsOn()) try { const p = f.call(document); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+function fsToggle() {
+  const on = !fsWanted();
+  try { localStorage.setItem(FS_KEY, on ? '1' : '0'); } catch (e) {}
+  if (on) fsEnter(); else fsExit();
+}
+
+// « ↻ Actualiser » : recharge l'app (dernière version + données). Rien n'est perdu : un projet ouvert est enregistré
+// en quittant la page (V7), les envois en attente sont gardés (fb_dirty). Hors ligne : on ne recharge pas (l'app
+// ne s'ouvrirait plus sans réseau). Un achat en cours de saisie demande confirmation.
+function reloadApp() {
+  if (navigator.onLine === false) { toast('⚠️', 'Hors ligne : actualisez quand le réseau revient (l\'app reste ouverte).', 'var(--warn)'); return; }
+  const typed = document.body.dataset.app === 'achats' && document.body.dataset.ach === 'nouveau' &&
+    [...document.querySelectorAll('#page-nouveau input[type=text], #page-nouveau input[type=number], #page-nouveau input:not([type]), #page-nouveau textarea')].some(i => i.value.trim() && i.value !== i.defaultValue);   // pas la quantité 1 d'un formulaire vierge
+  if (typed && !confirm('Actualiser l\'app ?\nSi l\'achat affiché a des modifications non sauvegardées, elles seront perdues.')) return;
+  try { const a = document.activeElement; if (a && a.blur) a.blur(); } catch (e) {}
+  setTimeout(() => location.reload(), 120);
+}
+
+// ─── PANNEAU ☁ (V9) : « ↻ Actualiser » à côté de « Synchroniser », « ⚙ Réglages » (Project Master) à côté de
+//     « 🔔 Rappels », « ⛶ Plein écran ». La synchro (V2) redessine le panneau à chaque changement d'état : les boutons
+//     sont remis après chaque dessin, dans l'ordre POP_ORDER. Masqués sur ordinateur (CSS). ──
+const POP_ORDER = ['in', 'now', 'm:reload', 'reset', 'rappels', 'm:reglages', 'm:fs', 'out'];
+function popExtras() {
+  const pop = $('fb-pop'); if (!pop) return;
+  const mk = (m, txt) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn bs btn-sm m-pop'; b.dataset.m = m; b.textContent = txt; return b; };
+  const rank = b => { const i = POP_ORDER.indexOf(b.dataset.a || 'm:' + b.dataset.m); return i < 0 ? POP_ORDER.length : i; };
+  const fill = () => {
+    const row = pop.querySelector('.fb-row'); if (!row || row.querySelector('.m-pop')) return;
+    row.append(mk('reload', '↻ Actualiser'), mk('reglages', '⚙ Réglages'));
+    if (fsOK()) row.append(mk('fs', fsWanted() ? '⛶ Écran normal' : '⛶ Plein écran'));
+    [...row.children].sort((a, b) => rank(a) - rank(b)).forEach(b => row.appendChild(b));
+  };
+  new MutationObserver(fill).observe(pop, { childList: true });   // pas subtree : nos propres ajouts ne relancent rien
+  fill();
+  pop.addEventListener('click', e => {
+    const b = e.target.closest('.m-pop'); if (!b) return;
+    pop.classList.remove('on');
+    if (b.dataset.m === 'reload') reloadApp();
+    else if (b.dataset.m === 'reglages') { window.switchApp('projects'); window.pmGo('settings'); toTop(); }
+    else if (b.dataset.m === 'fs') fsToggle();
+  });
+}
+
 // ─── BRANCHEMENT ───────────────────────────────────────────────────────────
 const wrap = (name, mk) => { const o = window[name]; if (typeof o === 'function') window[name] = mk(o); };
 function init() {
@@ -12148,6 +12252,13 @@ function init() {
   document.querySelectorAll('.sidebar nav').forEach(n => n.addEventListener('click', e => { if (e.target.closest('.nav-item')) setTimeout(toTop, 0); }));
   watchCards();
   watchPreviews();
+  // Projets › liste : libellé court « 📁 Dossier » tant qu'aucun dossier n'est lié, sinon le nom du dossier (V9)
+  const rl = $('pmRootLabel');
+  if (rl) { const mark = () => rl.classList.toggle('m-def', /Lier dossier projets/.test(rl.textContent)); mark(); new MutationObserver(mark).observe(rl, { childList: true, characterData: true, subtree: true }); }
+  searchIcon();
+  popExtras();
+  // Plein écran activé : le premier toucher le rétablit (il faut un geste de l'utilisateur) ; pas sur un champ (clavier)
+  document.addEventListener('click', e => { const t = e.target; if (MQ.matches && fsWanted() && !fsOn() && fsOK() && !(t.closest && t.closest('.m-pop, input, select, textarea'))) fsEnter(); }, true);
   mirrorBadge('home', $('hp-rail-dot'));
   mirrorBadge('achats', $('xa-nc-liv'));
   mirrorSync();

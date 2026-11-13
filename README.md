@@ -4,7 +4,8 @@ Application web en un seul fichier HTML, hors ligne, en français. Trois apps da
 **Suivi des Achats** (achats, budgets, livraisons, fournisseurs), **Engineering** (solutions, cahiers des charges,
 export Word) et **Project Master** (projets, actions, BOM, outils, planning).
 
-- **Version actuelle : V8** — téléphone : plus de place (boutons sur une ligne, marges réduites, noms d'outils entiers dans la grille) et aperçu Engineering en pages A4 réduites comme un PDF ; ordinateur inchangé (`versions/v8.html`).
+- **Version actuelle : V9** — téléphone : liste des projets compacte, recherche réduite à l'icône 🔎, et dans le panneau ☁ les boutons Actualiser, Réglages et Plein écran ; ordinateur inchangé (`versions/v9.html`).
+- V8 — téléphone : plus de place (boutons sur une ligne, marges réduites, noms d'outils entiers dans la grille) et aperçu Engineering en pages A4 réduites comme un PDF ; ordinateur inchangé (`versions/v8.html`).
 - V7 — plus de perte silencieuse (projets enregistrés automatiquement, fusion au lieu d'écraser entre postes, ZIP « Fusionner »), grille jalons × outils sur téléphone, menu ☰ à la place des puces (`versions/v7.html`).
 - V6 — rappels des échéances (jalons d'outils, actions datées) par notification sur le téléphone, même app fermée (`versions/v6.html`).
 - V5 — correction des lignes de budget au même numéro (montants négatifs) et documents des budgets (PDF) en ligne (`versions/v5.html`).
@@ -12,7 +13,7 @@ export Word) et **Project Master** (projets, actions, BOM, outils, planning).
 - V3 — vue téléphone comme une app : barre d'onglets en bas, pages en puces, listes en cartes, fenêtres qui montent du bas ; affichage ordinateur inchangé (`versions/v3.html`).
 - V2 — synchronisation Firebase : connexion Google, données partagées, images et pièces jointes dans Storage, hors ligne conservé (`versions/v2.html`).
 - V1 — état de départ, fichier fourni tel quel (`versions/v1.html`).
-- Fichier : `plateforme.html` (~12 160 lignes). Copies des versions : `versions/vN.html`. Tests : `cd tests && npm install && node test_sync.js && node test_mobile.js && node test_budget.js && node test_rappels.js`
+- Fichier : `plateforme.html` (~12 270 lignes). Copies des versions : `versions/vN.html`. Tests : `cd tests && npm install && node test_sync.js && node test_mobile.js && node test_budget.js && node test_rappels.js`
 - Dossier `functions/` : fonction quotidienne des rappels (à déployer une fois, voir JOURNAL).
 - Lancer : en ligne (https) ou via http://localhost pour la synchro ; ouvert comme fichier, l'app marche en mode local seulement.
 - Données : copie locale dans le navigateur (localStorage + IndexedDB) ; avec connexion Google, synchronisées dans Firebase (projet `work-75094` : Firestore + Storage). Fichier `platform_data.zip` lié toujours possible.

@@ -182,6 +182,22 @@ const MEASURE = `(() => {
   await chk('projet ouvert : Sauvegarder · Liste · état · ✕ sur une seule ligne', () => oneLine('#pproj-editor > div:first-child'));
   await page.evaluate(() => pmShowTab('outils'));
   await chk('Outils & Suivi : les 4 boutons sur une seule ligne', () => oneLine('.pm-tabpane[data-tab="outils"] .ph > div[style*="display:flex"]'));
+  const projBar = () => page.evaluate(() => {   // 3 boutons sur une ligne, les 2 filtres côte à côte sur la suivante, rien ne dépasse
+    const bar = document.querySelector('#pproj-list > div:first-child'), mid = e => { const r = e.getBoundingClientRect(); return r.top + r.height / 2; };
+    const bs = [...bar.querySelectorAll(':scope > .btn')].map(mid), ss = [...bar.querySelectorAll(':scope > select')].map(mid), sp = a => Math.max(...a) - Math.min(...a);
+    const rl = document.getElementById('pmRootLabel');
+    return bs.length === 3 && ss.length === 2 && sp(bs) <= 2 && sp(ss) <= 2 && ss[0] > bs[0] + 10 && bar.scrollWidth <= bar.clientWidth + 1 || { bs, ss, sw: bar.scrollWidth, cw: bar.clientWidth, rl: rl.textContent };
+  });
+  await page.evaluate(() => { pmProjTab('list'); pmGo('projects'); window.scrollTo(0, 0); });
+  await page.waitForTimeout(200);
+  await chk('Projets › liste : « ＋ Projet · 📁 Dossier · ⚙ Sous-dossiers » sur une ligne, les 2 filtres côte à côte (2 lignes au lieu de 4)', projBar);
+  await page.evaluate(() => { pmRootDir = { name: 'Projets Akwel 2026 – dossier commun de l\'équipe' }; pmUpdateRootLabel(); });
+  await page.waitForTimeout(100);
+  await chk('Projets › liste : dossier lié au nom long → toujours 2 lignes, nom coupé « … »', async () => {
+    const r = await projBar(); if (r !== true) return r;
+    return page.evaluate(() => { const rl = document.getElementById('pmRootLabel'); return rl.scrollWidth > rl.clientWidth && getComputedStyle(rl).textOverflow === 'ellipsis' || rl.textContent; });
+  });
+  await page.evaluate(() => { pmRootDir = null; pmUpdateRootLabel(); });
   await page.evaluate(() => { switchApp('engineering'); engEditProject('ep1'); });
   await page.waitForTimeout(500);
   await chk('Engineering : aperçu en vraies pages réduites à la largeur de l\'écran (comme un PDF)', () => page.evaluate(() => {
@@ -189,6 +205,73 @@ const MEASURE = `(() => {
     const cs = getComputedStyle(w), inner = w.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
     return pz > 0.3 && pz < 1 && Math.abs(pg.getBoundingClientRect().width - inner) <= 2 && w.scrollWidth <= w.clientWidth + 1 || { pz, page: pg.getBoundingClientRect().width, inner };
   }));
+  // ─── V9 : barre du haut de Projets (🔎 seule), panneau ☁ (Actualiser, Réglages, Plein écran) ───
+  await page.evaluate(() => { switchApp('projects'); pmGo('projects'); window.scrollTo(0, 0); });
+  await page.waitForTimeout(200);
+  await chk('Projets : seulement 🔎 dans la barre du haut, à côté de ☁ (titre entier, plus de boîte tronquée)', () => page.evaluate(() => {
+    const q = document.getElementById('m-q').getBoundingClientRect(), s = document.getElementById('m-sync').getBoundingClientRect(), t = document.getElementById('pmTitle');
+    return getComputedStyle(document.getElementById('pmSearch')).display === 'none' && q.width === 38 && Math.abs(q.top - s.top) <= 1 && q.right <= s.left - 4 && t.scrollWidth <= t.clientWidth || { q: q.width, qt: q.top, st: s.top, t: [t.scrollWidth, t.clientWidth] };
+  }));
+  await tap('#m-q');
+  await chk('toucher 🔎 : boîte de recherche sur toute la barre, titre masqué, curseur dans la boîte', () => page.evaluate(() => {
+    const i = document.getElementById('pmSearch'), r = i.getBoundingClientRect();
+    return document.activeElement === i && r.width >= innerWidth - 54 - 54 - 38 - 6 - 2 && getComputedStyle(document.querySelector('#main-projects .topbar-title')).display === 'none' || { w: r.width, a: document.activeElement.id };
+  }));
+  await page.keyboard.type('CX735'); await page.waitForTimeout(200);
+  const shown = await page.evaluate(() => getComputedStyle(document.getElementById('pmSearchResults')).display === 'block');
+  await tap('#m-qx');
+  await chk('recherche : résultats affichés ; ✕ vide la boîte, cache les résultats et remet 🔎', () => page.evaluate(sh => {
+    const open = document.querySelector('#main-projects .topbar').classList.contains('m-q-open');
+    return sh && !open && document.getElementById('pmSearch').value === '' && document.getElementById('pmSearchResults').style.display === 'none' && getComputedStyle(document.getElementById('m-q')).display === 'flex' || { sh, open };
+  }, shown));
+  await tap('#m-q'); await page.keyboard.type('CX735'); await page.waitForTimeout(200);
+  await page.evaluate(() => document.querySelector('#pmSearchResults [onclick^="pmEditProject"]').click()); await page.waitForTimeout(200);
+  await chk('recherche : choisir un résultat ouvre le projet et referme la boîte', () => page.evaluate(() => {
+    const open = document.querySelector('#main-projects .topbar').classList.contains('m-q-open'), ed = document.getElementById('pproj-editor').style.display;
+    return ed !== 'none' && !open && document.getElementById('pmSearch').value === '' || { ed, open };
+  }));
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await tap('#m-sync');
+  const popPos = () => page.evaluate(() => { const p = {}; document.querySelectorAll('#fb-pop .fb-row > .btn').forEach(b => { if (getComputedStyle(b).display === 'none') return; const r = b.getBoundingClientRect(); p[b.dataset.a || b.dataset.m] = [Math.round(r.top), Math.round(r.left), Math.round(r.width)]; }); return p; });
+  await chk('panneau ☁ (non connecté) : « ↻ Actualiser » · « ⚙ Réglages » côte à côte, puis « ⛶ Plein écran »', async () => {
+    const p = await popPos(); return !!p.reload && p.reload[0] === p.reglages[0] && p.reglages[1] > p.reload[1] && (!p.fs || p.fs[0] > p.reload[0]) && (!p.in || p.in[0] < p.reload[0]) || p;
+  });
+  await page.evaluate(() => { document.getElementById('fb-pop').innerHTML = '<div class="fb-h">☁ Synchronisation</div><div class="fb-row"><button class="btn bs btn-sm" data-a="now">Synchroniser</button><button class="btn bs btn-sm" data-a="reset">Reprendre les données de l\'équipe</button><button class="btn bs btn-sm" data-a="rappels">🔔 Rappels</button><button class="btn bs btn-sm" data-a="out">Se déconnecter</button></div>'; });
+  await page.waitForTimeout(50);   // comme un nouveau dessin du panneau par la synchro (connecté)
+  await chk('panneau ☁ (connecté, redessiné) : Synchroniser | ↻ Actualiser, Reprendre… en entier, 🔔 Rappels | ⚙ Réglages', async () => {
+    const p = await popPos(); return !!p.reload && p.now[0] === p.reload[0] && p.reload[1] > p.now[1] && p.reset[0] > p.now[0] && p.reset[2] > p.now[2] * 1.8 && p.rappels[0] === p.reglages[0] && p.reglages[1] > p.rappels[1] && p.rappels[0] > p.reset[0] || p;
+  });
+  await tap('#fb-pop [data-m="reglages"]');
+  await chk('« ⚙ Réglages » ouvre Projets › Settings et ferme le panneau', () => page.evaluate(() =>
+    document.body.dataset.app === 'projects' && document.getElementById('ppage-settings').style.display !== 'none' && !document.getElementById('fb-pop').classList.contains('on') || [document.body.dataset.app, document.getElementById('ppage-settings').style.display]));
+  await tap('#m-sync'); await tap('#fb-pop [data-m="fs"]'); await page.waitForTimeout(300);
+  const fsA = await page.evaluate(() => [!!document.fullscreenElement, localStorage.getItem('m_plein_ecran')]);
+  await page.evaluate(() => document.fullscreenElement && document.exitFullscreen()); await page.waitForTimeout(300);   // le navigateur quitte le plein écran
+  await tap('#m-tabbar [data-app="achats"]'); await page.waitForTimeout(300);
+  const fsB = await page.evaluate(() => !!document.fullscreenElement);
+  await tap('#m-sync');
+  const fsLab = await page.evaluate(() => document.querySelector('#fb-pop [data-m="fs"]').textContent);
+  await tap('#fb-pop [data-m="fs"]'); await page.waitForTimeout(300);
+  await chk('« ⛶ Plein écran » : activé, rétabli au toucher suivant après une sortie ; « ⛶ Écran normal » le désactive', () => page.evaluate(([a, b, l]) =>
+    a[0] && a[1] === '1' && b && l === '⛶ Écran normal' && !document.fullscreenElement && localStorage.getItem('m_plein_ecran') === '0' || { a, b, l, now: !!document.fullscreenElement }, [fsA, fsB, fsLab]));
+  await ctx.setOffline(true);
+  await page.evaluate(() => { window.__avant = 1; });
+  await tap('#m-sync'); await tap('#fb-pop [data-m="reload"]'); await page.waitForTimeout(400);
+  await chk('« ↻ Actualiser » hors ligne : pas de rechargement (l\'app resterait vide), message', () => page.evaluate(() =>
+    window.__avant === 1 && /Hors ligne/.test(document.querySelector('.toast') ? document.querySelector('.toast').textContent : '') || document.querySelector('.toast') && document.querySelector('.toast').textContent));
+  await ctx.setOffline(false);
+  await page.evaluate(() => { switchApp('achats'); goTo('nouveau'); resetForm(); document.getElementById('f-desc').value = 'Achat en cours'; });
+  let asked = '';
+  page.once('dialog', d => { asked = d.message(); d.dismiss(); });
+  await tap('#m-sync'); await tap('#fb-pop [data-m="reload"]'); await page.waitForTimeout(400);
+  await chk('« ↻ Actualiser » sur un achat en cours de saisie : confirmation ; « Annuler » garde la saisie', () => page.evaluate(a =>
+    /non sauvegardées/.test(a) && window.__avant === 1 && document.getElementById('f-desc').value === 'Achat en cours' || a, asked));
+  await page.evaluate(() => { resetForm(); switchApp('home'); });
+  await page.waitForTimeout(200);
+  await tap('#m-sync');
+  await Promise.all([page.waitForEvent('load'), page.click('#fb-pop [data-m="reload"]')]);
+  await page.waitForFunction(() => window.fbSync && document.getElementById('main-home'));
+  await chk('« ↻ Actualiser » recharge l\'app (les données restent)', () => page.evaluate(() => window.__avant === undefined && !!document.getElementById('m-q') && JSON.parse(localStorage.getItem('pm_db')).projects.length > 0));
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }
