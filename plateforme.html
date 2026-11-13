@@ -8932,7 +8932,7 @@ function pmBud() {
 // Achats rattachés au projet : rattachement explicite, sinon nom / code du projet
 function pmBudPurchases() {
   const b = pmBud();
-  const keys = (b.links.length ? b.links : [pmCurProj.name, pmCurProj.code].filter(Boolean))
+  const keys = (b.links.length ? b.links : [pmCurProj.name, pmCurProj.code].concat(window.pmAchBud ? pmAchBud.projects(pmCurProj).names : []).filter(Boolean))   // V14 : + projet d'achats trouvé d'après le nom (« CX735 » ↔ « Ford CX735 »)
     .map(s => String(s).trim().toLowerCase()).filter(Boolean);
   if (!keys.length) return [];
   return hpPurchases().filter(p => keys.includes(String(p.projet || '').trim().toLowerCase()));
@@ -10113,7 +10113,7 @@ function rpData() {
   const rows = [];
 
   const build = (name, p) => {
-    const keys = (p && p.budget && p.budget.links && p.budget.links.length ? p.budget.links : [name, p && p.code]).map(norm).filter(Boolean);
+    const keys = (p && p.budget && p.budget.links && p.budget.links.length ? p.budget.links : [name, p && p.code].concat(p && window.pmAchBud ? pmAchBud.projects(p).names : [])).map(norm).filter(Boolean);   // V14 : + projet d'achats trouvé d'après le nom
     const buys = pur.filter(x => keys.includes(norm(x.projet)));
     buys.forEach(x => used.add(x.id));
     const active = buys.filter(x => x.recMIGO !== 'CANCELLED');
@@ -12893,6 +12893,90 @@ css.textContent = `
 document.head.appendChild(css);
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', engDocsInit); else engDocsInit();
 window.engPmDocs = { render: engRenderPmDocs, product: engProd };   // tests, dépannage
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// BUDGETS DU SUIVI D'ACHATS DANS LE PROJET (V14)
+// Project Master › projet › onglet « Budget » : en haut, les budgets Costumer et CAPEX du Suivi d'achats de ce
+// projet, avec la MÊME carte que Achats › Budget (alloué, dépensé, restant, % consommé, lignes client /
+// immobilisations). La carte n'est pas recopiée dans le code : renderBudget() dessine la page Budget d'Achats
+// (cachée) et on y reprend les cartes de ces budgets telles quelles (✎, 📎 et ✕ compris).
+// Projet d'achats : ceux cochés dans « Rattachement à l'application Achats » ; sinon, automatiquement, celui dont
+// le nom est dans le nom ou le code du projet (« CX735 » ↔ « Ford CX735 ») : il faut un code lettres + chiffres
+// (CX735, L384, K9…), ou exactement le même nom. Le reste de l'onglet (enveloppes, dépenses) ne change pas.
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const settings = () => (typeof S !== 'undefined' && S) ? S : (() => { try { return JSON.parse(localStorage.getItem('suivi_settings') || '{}'); } catch (e) { return {}; } })();
+const toks = s => String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+const key = s => toks(s).join(' ');
+const isCode = t => /[a-z]/.test(t) && /\d/.test(t);   // CX735, L384, K9… (pas « 2026 », pas « projet »)
+const TYPES = ['Costumer', 'CAPEX'];   // orthographe « Costumer » d'origine (données existantes)
+// Projets du Suivi d'achats d'un projet Project Master : cochés, sinon trouvés d'après son nom ou son code.
+// Trouvé automatiquement seulement s'il n'est à aucun autre projet (coché ailleurs, ou trouvé aussi pour un autre) :
+// sinon il faut le cocher (pas de budget ni d'achat compté deux fois, ex. dans le rapport).
+const linksOf = p => ((p && p.budget && p.budget.links) || []).filter(Boolean);
+function autoHit(p, a) {
+  const own = [p && p.name, p && p.code].filter(Boolean), t = toks(a); if (!t.length) return false;
+  if (own.map(key).includes(t.join(' '))) return true;
+  const ownT = new Set(own.flatMap(toks)); return t.some(isCode) && t.every(x => ownT.has(x));
+}
+const pmList = () => { try { return (typeof pmDB !== 'undefined' && pmDB && pmDB.projects) || JSON.parse(localStorage.getItem('pm_db') || '{}').projects || []; } catch (e) { return []; } };
+function achProjects(p) {
+  const links = linksOf(p);
+  if (links.length) return { names: links, auto: false, shared: [] };
+  const st = settings(), others = pmList().filter(q => q && (!p || q.id !== p.id));
+  const all = [...new Set([...(st.projets || []), ...(st.budgets || []).map(b => b && b.projet)].filter(Boolean).map(String))];
+  const taken = a => others.some(q => linksOf(q).length ? linksOf(q).some(l => key(l) === key(a)) : autoHit(q, a));
+  const hits = all.filter(a => autoHit(p, a));
+  return { names: hits.filter(a => !taken(a)), auto: true, shared: hits.filter(taken) };
+}
+function budgetsOf(p) {
+  const r = achProjects(p), keys = new Set(r.names.map(key));
+  r.list = (settings().budgets || []).filter(b => b && keys.has(key(b.projet)) && TYPES.includes(b.type || 'Costumer'))
+    .sort((a, b) => TYPES.indexOf(a.type || 'Costumer') - TYPES.indexOf(b.type || 'Costumer'));   // Costumer puis CAPEX, sinon l'ordre d'Achats
+  return r;
+}
+// Cartes de la page Budget d'Achats (#budgetGrid), par id de budget (bouton ✎ de la carte)
+function achCards() {
+  const out = {};
+  document.querySelectorAll('#budgetGrid .budget-card').forEach(c => { const b = c.querySelector('button[onclick^="openEditBudget("]'), m = b && /^openEditBudget\('(.*)'\)$/.exec(b.getAttribute('onclick') || ''); if (m) out[m[1]] = c; });
+  return out;
+}
+function paint() {
+  const box = $('pm-achbud'); if (!box || typeof pmCurProj === 'undefined' || !pmCurProj) return;
+  const { names, auto, list, shared } = budgetsOf(pmCurProj), cards = achCards(), nm = names.map(n => '« ' + esc(n) + ' »').join(', ');
+  const how = !names.length ? (shared.length ? 'Le projet d\'achats ' + shared.map(n => '« ' + esc(n) + ' »').join(', ') + ' correspond aussi à un autre projet : cochez-le dans « Rattachement à l\'application Achats » plus bas pour l\'afficher ici.'
+      : 'Aucun projet du Suivi d\'achats ne correspond au nom ou au code de ce projet : cochez-le dans « Rattachement à l\'application Achats » plus bas.')
+    : auto ? 'Projet d\'achats ' + nm + ', trouvé automatiquement d\'après le nom du projet (pour en choisir un autre : « Rattachement à l\'application Achats » plus bas).'
+    : 'Projet d\'achats ' + nm + ', coché dans « Rattachement à l\'application Achats » plus bas.';
+  box.innerHTML = '<div class="ph"><div class="pt"><div class="dot" style="background:var(--accent3);box-shadow:0 0 7px var(--accent3)"></div>Budgets du Suivi d\'achats — Costumer et CAPEX</div>' +
+      '<button type="button" class="btn bs btn-sm" onclick="switchApp(\'achats\');goTo(\'budget\')">↗ Ouvrir dans Achats</button></div>' +
+    '<div class="pb"><div class="pm-achbud-note">' + how + '</div>' +
+      (list.length ? '<div class="budget-grid pm-achbud-grid">' + list.map(b => cards[b.id] ? cards[b.id].outerHTML : '').join('') + '</div>'
+        : names.length ? '<div class="hp-empty">Aucun budget Costumer ni CAPEX pour ' + nm + ' dans Achats › Budget.</div>' : '') + '</div>';
+}
+// La section se place juste avant #pm-budget : pmBudRender réécrit #pm-budget sans l'effacer
+function ensure() {
+  const host = $('pm-budget'); if (!host) return false;
+  if (!$('pm-achbud')) { const box = document.createElement('div'); box.id = 'pm-achbud'; box.className = 'panel'; box.style.marginBottom = '16px'; host.before(box); }
+  return true;
+}
+const origRB = window.renderBudget;
+function refresh() { if (!ensure()) return; try { if (typeof origRB === 'function') origRB(); } catch (e) { console.warn('budgets achats', e); } paint(); }
+const shown = () => { const b = $('pm-achbud'); return !!(b && b.offsetParent); };
+const wrap = (n, mk) => { const o = window[n]; if (typeof o === 'function') window[n] = mk(o); };
+wrap('renderBudget', o => function () { const r = o.apply(this, arguments); try { if ($('pm-achbud')) paint(); } catch (e) {} return r; });   // budget créé, modifié, supprimé
+wrap('pmShowTab', o => function (id) { const r = o.apply(this, arguments); if (id === 'budget') try { refresh(); } catch (e) { console.warn('budgets achats', e); } return r; });
+wrap('pmBudToggleLink', o => function () { const r = o.apply(this, arguments); try { if (shown()) paint(); } catch (e) {} return r; });   // projet d'achats coché / décoché
+wrap('updateAll', o => function () { const r = o.apply(this, arguments); try { if (shown()) refresh(); } catch (e) {} return r; });   // achats changés (ici ou par l'équipe)
+const css = document.createElement('style');
+css.textContent = '.pm-achbud-note{font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.5}.pm-achbud-grid{margin-bottom:0}';
+document.head.appendChild(css);
+window.pmAchBud = { projects: achProjects, budgets: budgetsOf, refresh };   // tests, dépannage
 })();
 </script>
 </body>

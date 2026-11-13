@@ -390,6 +390,18 @@ const MEASURE = `(() => {
   }));
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'doc_fichiers.png') });
   await page.keyboard.press('Escape');
+  // ─── V14 : Projets › Budget : les budgets Costumer / CAPEX du Suivi d'achats, même carte qu'Achats ───
+  await page.evaluate(() => {
+    pmDB.projects.find(p => p.id === 'Pp2').name = 'EMA L384 2'; pmDB.projects.find(p => p.id === 'Pp3').name = 'HAB K9 3';   // « CX735 » : seulement le projet 1
+    pmEditProject('Pp1'); pmShowTab('budget'); (document.getElementById('pm-achbud') || document.body).scrollIntoView({ block: 'start' });
+  });
+  await page.waitForTimeout(200);
+  await chk('Projets › Budget : la carte du budget du Suivi d\'achats (la même qu\'Achats), dans la largeur de l\'écran', () => page.evaluate(() => {
+    const c = [...document.querySelectorAll('#pm-achbud .budget-card')], a = document.querySelector('#budgetGrid .budget-card button[onclick="openEditBudget(\'B1\')"]');
+    const same = c.length === 1 && !!a && c[0].outerHTML === a.closest('.budget-card').outerHTML;
+    return same && c.every(x => x.getBoundingClientRect().right <= innerWidth + 0.5) && document.documentElement.scrollWidth <= innerWidth || { n: c.length, same, sw: document.documentElement.scrollWidth };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'pm_budget_achats.png') });
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

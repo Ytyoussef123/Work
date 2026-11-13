@@ -199,6 +199,41 @@ const pdf = (name, txt) => ({ name, mimeType: 'application/pdf', buffer: Buffer.
     check('aucune erreur JavaScript (poste restauré)', fresh.errors.length === 0, fresh.errors);
   }
 
+  console.log('4. Projets › projet › Budget : les budgets du Suivi d\'achats (V14)');
+  await page.evaluate(() => {
+    switchApp('projects');
+    pmDB.projects.push({ id: 'PF', name: 'Ford CX735', code: 'PRJ-735', status: 'Development', volumes: [], products: [], tools: [], toolPacks: [] },
+      { id: 'PE', name: 'EMA L384 essais', code: '', status: 'Quotation', volumes: [], products: [], tools: [], toolPacks: [] });
+    pmSave();
+    S.budgets.push({ id: 'BK', projet: 'CX735', type: 'CAPEX', label: 'Budget CAPEX CX735', montant: 50000, devise: 'EUR', immobilisations: [{ id: 'K1', numero: 'IMM-9', description: 'Presse', montant: 50000 }] },
+      { id: 'BE', projet: 'EMA L384', type: 'Costumer', label: 'Budget EMA', montant: 1000, devise: 'EUR', immobilisations: [] });
+    S.projets.push('EMA L384'); saveSettings();
+    pmEditProject('PF'); pmShowTab('budget');
+  });
+  await page.waitForTimeout(300);
+  const pmCards = () => page.evaluate(() => {
+    const box = document.getElementById('pm-achbud'), cards = box ? [...box.querySelectorAll('.budget-card')] : [];
+    const idOf = c => (/openEditBudget\('(.*?)'\)/.exec(c.outerHTML) || [])[1];
+    const ach = {}; document.querySelectorAll('#budgetGrid .budget-card').forEach(c => { ach[idOf(c)] = c.outerHTML; });
+    const att = [...document.querySelectorAll('#pm-budget .panel')].map(x => x.textContent).find(t => /Rattachement/.test(t)) || '';
+    return { box: !!box, ids: cards.map(idOf), same: cards.every(c => c.outerHTML === ach[idOf(c)]), note: box ? (box.querySelector('.pm-achbud-note') || {}).textContent : '',
+      vals: cards.map(c => [...c.querySelectorAll('.bcn-val')].map(v => v.textContent.trim()).join(' / ')), achats: +((att.match(/(\d+) achat\(s\) rattaché/) || [])[1] || -1) };
+  });
+  const v1 = await pmCards();
+  check('projet « Ford CX735 » : budgets Costumer puis CAPEX du projet d\'achats « CX735 », trouvé automatiquement ; OPEX et autres projets exclus', v1.ids.join() === 'BC,BK' && /CX735.*automatiquement/.test(v1.note), v1);
+  check('… la MÊME carte qu\'Achats › Budget (alloué, dépensé, restant, % consommé, lignes client), à l\'identique', v1.ids.length === 2 && v1.same, v1.vals);
+  check('« Rattachement à l\'application Achats » : les achats du projet sont trouvés aussi (avant : 0 sans case cochée)', v1.achats === 5, v1.achats);
+  await page.evaluate(() => { openEditBudget('BC'); document.getElementById('bMontant').value = '160000'; confirmBudget(); });
+  await page.waitForTimeout(200);
+  const v2 = await pmCards();
+  check('budget modifié par ✎ (sans quitter le projet) : la carte du projet suit', /^160000EUR/.test((v2.vals[0] || '').replace(/\s/g, '')) && v2.same, v2.vals);   // (espaces fines des nombres)
+  await page.evaluate(() => { pmDB.projects.push({ id: 'PX', name: 'CX735 Phase 2', code: '', volumes: [], products: [], tools: [], toolPacks: [] }); pmShowTab('budget'); });
+  const v3 = await pmCards();
+  await page.evaluate(() => pmBudToggleLink('CX735', true));
+  const v4 = await pmCards();
+  check('« CX735 » aussi dans le nom d\'un autre projet : rien d\'automatique (pas de double compte), message ; coché : les budgets s\'affichent', !v3.ids.length && /autre projet/.test(v3.note) && v4.ids.join() === 'BC,BK' && /coché/.test(v4.note), [v3, v4.ids, v4.note]);
+  await page.evaluate(() => { pmBudToggleLink('CX735', false); pmDB.projects = pmDB.projects.filter(p => p.id !== 'PX'); });
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();
