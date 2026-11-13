@@ -316,8 +316,8 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
     document.getElementById('fb-pop').classList.remove('on');
     return { keys, hidden, fs: !!document.fullscreenEnabled };
   });
-  check('panneau ☁ : « ↻ Actualiser » après « Synchroniser », « ⚙ Réglages » après « 🔔 Rappels » ; masqués sur ordinateur',
-    r.keys === 'now,m:reload,reset,rappels,m:reglages,' + (r.fs ? 'm:fs,' : '') + 'out' && r.hidden, r);
+  check('panneau ☁ : « ↻ Actualiser » après « Synchroniser », « ⚙ Réglages » après « 🔔 Rappels », « 📲 Installer l\'app » en dernier ; masqués sur ordinateur',
+    r.keys === 'now,m:reload,reset,rappels,m:reglages,' + (r.fs ? 'm:fs,' : '') + 'out,m:install' && r.hidden, r);
   // e) B : fichier absent de ce poste → ouvert depuis sa copie en ligne
   await idb(B, 'del', id1);
   await B.evaluate(() => { switchApp('achats'); editRow('IDPJ1'); });
@@ -492,6 +492,84 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   await settle(E, A, B); await sleep(600); await settle(E, A, B);
   const prB = await pmOf(B);
   check('fusion : la note du poste E arrive chez B, rien de l\'équipe n\'est perdu', noteTexts(prB).includes('Note du poste E') && noteTexts(prB).includes('Note de A hors ligne') && (prB.tools[0].milestones[0] || {}).status === 'Fait', noteTexts(prB));
+
+  console.log('17. Charger un ZIP en choisissant ce qu\'on prend (V10) : rien d\'autre n\'est écrasé');
+  if (!JSZIP) console.log('  (ignoré : lancer « npm install » dans tests/ pour JSZip)');
+  else {
+    await settle(A, B);
+    const rt = await A.evaluate(async () => { const it = zipImport.itemsOf(await zipImport.readZip(await buildPlatformZip())); return { n: it.length, diff: it.filter(i => i.status !== 'same').map(i => i.coll + ':' + i.id) }; });
+    check('ZIP exporté par l\'app puis relu : tout est « identique » (rien à ajouter)', rt.n > 5 && !rt.diff.length, rt);
+    // ZIP « d'un autre poste » : l'export de A, avec des éléments nouveaux et un projet modifié
+    await A.evaluate(async () => {
+      const zip = await JSZip.loadAsync(await buildPlatformZip());
+      const pm = JSON.parse(await zip.file('project_master.json').async('string'));
+      pm.customers.push({ id: 'PcZ', name: 'TESLA' });
+      pm.projects.push({ id: 'PpZ', name: 'Projet du ZIP', customerId: 'PcZ', tools: [] }, { id: 'PpX', name: 'Projet non voulu', tools: [] });
+      const p1 = pm.projects.find(x => x.id === 'Pp1'); p1.oem = 'OEM du ZIP'; p1.tools = (p1.tools || []).concat([{ id: 'TZ', name: 'Outil du ZIP', milestones: [], notes: [] }]);
+      zip.file('project_master.json', JSON.stringify(pm));
+      const eng = JSON.parse(await zip.file('engineering.json').async('string'));
+      eng.solutions.push({ id: 'esZ', name: 'Solution du ZIP', specHtml: '<p>Z</p>' });
+      zip.file('engineering.json', JSON.stringify(eng));
+      let csv = await zip.file('purchasing_followup.csv').async('string'); if (csv.charCodeAt(0) === 0xFEFF) csv = csv.slice(1);
+      const nl = csv.indexOf('\n'), set = JSON.parse(csv.slice(10, nl).replace(/\r$/, '').trim());
+      set.budgets.push({ id: 'BZ', projet: 'P1', type: 'OPEX', label: 'Budget du ZIP', montant: 500 });
+      const rest = csv.slice(nl + 1), hl = rest.indexOf('\n'), heads = parseCSV(rest.slice(0, hl).replace(/\r$/, ''))[0].map(h => CSV_HEADER_MAP[h.trim().toLowerCase()] || h.trim().toLowerCase());
+      const row = o => heads.map(k => '"' + String(o[k] == null ? '' : o[k]).replace(/"/g, '""') + '"').join(',');
+      zip.file('purchasing_followup.csv', '﻿#SETTINGS:' + JSON.stringify(set) + '\r\n' + rest.replace(/\s*$/, '') + '\r\n' +
+        row({ id: 'IDZIPN', projet: 'P1', description: 'Achat du ZIP', fournisseur: 'ZSUP', _budgetId: 'BZ', puHT: 50, quantite: 2 }) + '\r\n' + row({ id: 'IDZIPX', projet: 'P2', description: 'Achat non voulu', puHT: 5, quantite: 1 }) + '\r\n');
+      const ex = JSON.parse(await zip.file('purchasing_extras.json').async('string'));
+      ex.extras.IDZIPN = { line: 999, wf: 'Commandé', attachments: [{ id: 'FattZ', name: 'zip.pdf', size: 10, type: 'application/pdf' }] };
+      ex.suppliers = Object.assign(ex.suppliers || {}, { ZSUP: { delai: '3 sem' } });
+      zip.file('purchasing_extras.json', JSON.stringify(ex));
+      zip.file('attachments/FattZ__zip.pdf', '%PDF-1.4 Z');
+      window.__zpFile = new File([await zip.generateAsync({ type: 'blob' })], 'autre_poste.zip');
+    });
+    // après l'export, A ajoute un outil au projet Pp1 : la fusion doit garder les deux outils
+    await A.evaluate(() => { const p = pmDB.projects.find(x => x.id === 'Pp1'); p.tools = p.tools || []; p.tools.push({ id: 'TL', name: 'Outil local', milestones: [], notes: [] }); pmSave(); });
+    await settle(A, B);
+    const cnt = () => A.evaluate(() => ({ pm: pmDB.projects.length, cust: pmDB.customers.length, ach: purchases.length, bud: S.budgets.length, sol: engDB.solutions.length, sup: Object.keys(JSON.parse(localStorage.getItem('hp_suppliers') || '{}')).length }));
+    const c0 = await cnt();
+    const openZp = () => A.evaluate(() => { window.__zpDone = window.hpRestore({ files: [window.__zpFile], value: '' }); });
+    await openZp();
+    await A.waitForSelector('#zp-ov .zp-dlg', { timeout: 8000 });
+    const K = { 'Projet du ZIP': 'pm:projects|PpZ', 'Projet non voulu': 'pm:projects|PpX', TESLA: 'pm:customers|PcZ', 'Projet 1': 'pm:projects|Pp1', 'Solution du ZIP': 'eng:solutions|esZ', 'Achat du ZIP': 'ach:achats|IDZIPN', 'Achat non voulu': 'ach:achats|IDZIPX', 'Budget du ZIP': 'ach:budgets|BZ', ZSUP: 'ach:fournisseurs|ZSUP', 'Sol 1': 'eng:solutions|es1' };
+    const rowOf = t => A.locator('#zp-ov .zp-it[data-k="' + K[t] + '"]');
+    const st = async t => { const r = rowOf(t); return (await r.count()) ? (await r.locator('input').isChecked() ? '☑' : '☐') + (await r.locator('.zp-b').textContent()) : 'absent'; };
+    const seen = {}; for (const t of ['Projet du ZIP', 'Projet non voulu', 'TESLA', 'Projet 1', 'Solution du ZIP', 'Achat du ZIP', 'Achat non voulu', 'Budget du ZIP', 'ZSUP', 'Sol 1']) seen[t] = await st(t);
+    check('fenêtre : les nouveautés du ZIP cochées, le projet modifié proposé sans être coché, les identiques seulement comptés',
+      seen['Projet du ZIP'] === '☑nouveau' && seen['Projet non voulu'] === '☑nouveau' && seen.TESLA === '☑nouveau' && seen['Projet 1'] === '☐différent' && seen['Solution du ZIP'] === '☑nouveau' &&
+      seen['Achat du ZIP'] === '☑nouveau' && seen['Achat non voulu'] === '☑nouveau' && seen['Budget du ZIP'] === '☑nouveau' && seen.ZSUP === '☑nouveau' && seen['Sol 1'] === 'absent' && !!(await A.$('#zp-ov .zp-same')), seen);
+    check('fenêtre : plus de « Les données actuelles des 3 applications seront remplacées »', !(await A.evaluate(() => /seront remplacées/.test(document.getElementById('zp-ov').textContent))));
+    for (const t of ['Projet non voulu', 'Achat non voulu', 'TESLA', 'Budget du ZIP', 'ZSUP', 'Projet 1']) await rowOf(t).locator('input').click();   // on ne prend qu'une partie (+ le projet modifié)
+    await A.click('#zp-ov [data-z="ok"]');
+    await A.evaluate(() => window.__zpDone);
+    const c1 = await cnt();
+    const a = await A.evaluate(() => ({ pp: pmDB.projects.map(p => p.id), cust: pmDB.customers.map(c => c.id), p1: pmDB.projects.find(p => p.id === 'Pp1'), ach: purchases.map(p => p.id), zn: purchases.find(p => p.id === 'IDZIPN') || {}, bud: S.budgets.map(b => b.id), sup: JSON.parse(localStorage.getItem('hp_suppliers') || '{}'), sol: engDB.solutions.map(s => s.id), dlg: !!document.querySelector('.fb-dlg') }));
+    check('ajouté : seulement ce qui est coché (projet, solution, achat) ; le reste du ZIP non', a.pp.includes('PpZ') && !a.pp.includes('PpX') && a.sol.includes('esZ') && a.ach.includes('IDZIPN') && !a.ach.includes('IDZIPX'), a);
+    check('ce dont les éléments cochés ont besoin est pris d\'office : client du projet, budget et fiche fournisseur de l\'achat', a.cust.includes('PcZ') && a.bud.includes('BZ') && !!a.sup.ZSUP, [a.cust, a.bud, Object.keys(a.sup)]);
+    check('rien d\'ici n\'est perdu : chaque base garde tous ses éléments (+ les ajouts)', c1.pm === c0.pm + 1 && c1.cust === c0.cust + 1 && c1.ach === c0.ach + 1 && c1.bud === c0.bud + 1 && c1.sol === c0.sol + 1 && c1.sup === c0.sup + 1, [c0, c1]);
+    check('projet modifié coché : fusionné (outil d\'ici ET outil du ZIP, case du ZIP)', a.p1.tools.some(t => t.id === 'TL') && a.p1.tools.some(t => t.id === 'TZ') && a.p1.oem === 'OEM du ZIP', a.p1.tools.map(t => t.id));
+    check('achat du ZIP avec ses données étendues (workflow, pièce jointe)', a.zn.wf === 'Commandé' && (a.zn.attachments || []).some(x => x.id === 'FattZ'), a.zn);
+    check('pas de fenêtre « ZIP chargé » de la synchro (rien n\'a été remplacé)', !a.dlg);
+    const fileA = await A.evaluate(() => new Promise(res => { const r = indexedDB.open('hp_files', 1); r.onsuccess = () => { const q = r.result.transaction('files').objectStore('files').get('FattZ'); q.onsuccess = () => res(!!q.result && q.result.name === 'zip.pdf'); q.onerror = () => res(false); }; r.onerror = () => res(false); }));
+    check('pièce jointe de l\'achat pris enregistrée sur ce poste', fileA);
+    await settle(A, B); await sleep(600); await settle(A, B);
+    const pmB = await getLS(B, 'pm_db'), achB = await getLS(B, 'suivi_autosave'), engB = await getLS(B, 'eng_db');
+    check('B reçoit ce qui a été pris (projet, client, outil fusionné, achat, solution), pas le reste', pmB.projects.some(p => p.id === 'PpZ') && !pmB.projects.some(p => p.id === 'PpX') && pmB.customers.some(c => c.id === 'PcZ') &&
+      pmB.projects.find(p => p.id === 'Pp1').tools.some(t => t.id === 'TL') && pmB.projects.find(p => p.id === 'Pp1').tools.some(t => t.id === 'TZ') && achB.some(p => p.id === 'IDZIPN') && !achB.some(p => p.id === 'IDZIPX') && engB.solutions.some(s => s.id === 'esZ'));
+    check('pièce jointe envoyée en ligne', files.has('app/files/FattZ'));
+    // « Annuler » et « Tout remplacer… » refusé : rien ne change
+    await openZp();
+    await A.waitForSelector('#zp-ov .zp-dlg', { timeout: 8000 });
+    const again = { voulu: await st('Projet du ZIP'), nonVoulu: await st('Projet non voulu') };
+    await A.click('#zp-ov [data-z="cancel"]'); await A.evaluate(() => window.__zpDone);
+    A.__dialog = 'dismiss';
+    await openZp(); await A.waitForSelector('#zp-ov .zp-dlg', { timeout: 8000 });
+    await A.click('#zp-ov [data-z="all"]'); await A.evaluate(() => window.__zpDone);
+    A.__dialog = 'accept';
+    const c2 = await cnt();
+    check('rechargé : ce qui a été pris est « identique », le reste encore proposé ; Annuler et « Tout remplacer » refusé ne changent rien', again.voulu === 'absent' && again.nonVoulu === '☑nouveau' && JSON.stringify(c2) === JSON.stringify(c1) && !(await A.$('#zp-ov')), [again, c1, c2]);
+  }
 
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);

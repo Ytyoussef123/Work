@@ -9,6 +9,7 @@ const SHOTS = args.includes('--shots') ? args[args.indexOf('--shots') + 1] : nul
 const QUIET = args.includes('--quiet');
 const HTML = fs.readFileSync(APP, 'utf8');
 const MOCK = fs.readFileSync(path.join(__dirname, 'mock_firebase.js'), 'utf8');
+const JSZIP = (() => { try { return fs.readFileSync(require.resolve('jszip/dist/jszip.min.js'), 'utf8'); } catch (e) { return null; } })();   // « npm install » dans tests/
 const { seed } = require('./seed_data');
 const DEVICE = args.includes('--device') ? args[args.indexOf('--device') + 1] : 'iPhone 13';
 const W = devices[DEVICE].viewport.width;
@@ -92,6 +93,7 @@ const MEASURE = `(() => {
     const u = r.request().url();
     if (u.startsWith('http://app.test/')) return r.fulfill({ contentType: 'text/html', body: HTML });
     if (u.includes('/firebasejs/') || u.includes('npm/firebase@')) return r.fulfill({ contentType: 'text/javascript', body: u.includes('-app-compat') ? MOCK : '' });
+    if (JSZIP && /jszip/.test(u)) return r.fulfill({ contentType: 'text/javascript', body: JSZIP });
     return r.abort();
   });
   await page.exposeFunction('__be', async () => null);
@@ -272,6 +274,47 @@ const MEASURE = `(() => {
   await Promise.all([page.waitForEvent('load'), page.click('#fb-pop [data-m="reload"]')]);
   await page.waitForFunction(() => window.fbSync && document.getElementById('main-home'));
   await chk('« ↻ Actualiser » recharge l\'app (les données restent)', () => page.evaluate(() => window.__avant === undefined && !!document.getElementById('m-q') && JSON.parse(localStorage.getItem('pm_db')).projects.length > 0));
+  // ─── V10 : installer l'app sur l'écran d'accueil ; charger un ZIP en choisissant ce qu'on prend ───
+  const IOS = /iPhone/.test(DEVICE);
+  await tap('#m-sync');
+  await chk('panneau ☁ : « 📲 Installer l\'app » sur toute la largeur, en dernier (app pas encore installée)', () => page.evaluate(() => {
+    const row = document.querySelector('#fb-pop .fb-row'), b = row.querySelector('[data-m="install"]'), vis = [...row.children].filter(x => getComputedStyle(x).display !== 'none');
+    return !!b && vis[vis.length - 1] === b && Math.abs(b.getBoundingClientRect().width - row.getBoundingClientRect().width) <= 1 || { b: !!b, w: b && b.getBoundingClientRect().width, rw: row.getBoundingClientRect().width };
+  }));
+  await tap('#fb-pop [data-m="install"]');
+  await chk('« 📲 Installer l\'app » : mode d\'emploi ' + (IOS ? 'iPhone (Partager › Sur l\'écran d\'accueil)' : 'Android (menu ⋮ › Installer l\'application)'), () => page.evaluate(ios => {
+    const t = (document.getElementById('m-install') || {}).textContent || '';
+    return (ios ? /Partager/.test(t) && /Sur l'écran d'accueil/.test(t) : /menu ⋮/.test(t) && /Installer l'application/.test(t)) || t.slice(0, 160);
+  }, IOS));
+  await tap('#m-install .btn');
+  await chk('mode d\'emploi refermé par « Compris »', () => page.evaluate(() => !document.getElementById('m-install')));
+  await page.evaluate(() => { window.__mm0 = window.matchMedia; window.matchMedia = q => /display-mode: fullscreen/.test(q) ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} } : window.__mm0.call(window, q); });
+  await tap('#m-sync');
+  await chk('dans l\'app installée (plein écran) : ni « 📲 Installer l\'app » ni « ⛶ Plein écran »', () => page.evaluate(() =>
+    !document.querySelector('#fb-pop [data-m="install"]') && !document.querySelector('#fb-pop [data-m="fs"]') && !!document.querySelector('#fb-pop [data-m="reload"]')));
+  await page.evaluate(() => { window.matchMedia = window.__mm0; document.getElementById('fb-pop').classList.remove('on'); });
+  if (!JSZIP) console.log('  (ZIP ignoré : lancer « npm install » dans tests/)');
+  else {
+    await page.waitForFunction(() => typeof JSZip !== 'undefined');
+    await page.evaluate(async () => {
+      const zip = await JSZip.loadAsync(await buildPlatformZip());
+      const pm = JSON.parse(await zip.file('project_master.json').async('string'));
+      pm.projects.push({ id: 'PpZ', name: 'Projet du ZIP avec un nom assez long pour passer à la ligne sur un petit écran', code: 'Z-1', tools: [] });
+      pm.projects[0].oem = 'OEM du ZIP';
+      zip.file('project_master.json', JSON.stringify(pm));
+      window.__zpDone = hpRestore({ files: [new File([await zip.generateAsync({ type: 'blob' })], 'sauvegarde_du_portable_2026-11-13.zip')], value: '' });
+    });
+    await page.waitForSelector('#zp-ov .zp-dlg');
+    await chk('charger un ZIP : fenêtre de choix en feuille du bas, dans la largeur, cases et boutons visibles, plus de « seront remplacées »', () => page.evaluate(() => {
+      const d = document.querySelector('#zp-ov .zp-dlg').getBoundingClientRect(), ok = document.querySelector('#zp-ov [data-z="ok"]').getBoundingClientRect(), cb = document.querySelector('#zp-ov .zp-it input').getBoundingClientRect();
+      return Math.abs(d.width - innerWidth) <= 1 && Math.abs(d.bottom - innerHeight) <= 1 && ok.top > d.top && ok.bottom <= innerHeight && cb.width >= 16 && document.documentElement.scrollWidth <= innerWidth &&
+        !document.getElementById('zp-ov').textContent.includes('seront remplacées') || { d: [d.width, d.bottom, innerWidth, innerHeight], ok: [ok.top, ok.bottom], cb: cb.width, sw: document.documentElement.scrollWidth };
+    }));
+    if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'zip_choix.png') });
+    await tap('#zp-ov [data-z="ok"]');
+    await page.evaluate(() => window.__zpDone);
+    await chk('« Ajouter la sélection » : le projet nouveau est ajouté, le projet modifié (non coché) reste tel quel', () => page.evaluate(() => pmDB.projects.some(p => p.id === 'PpZ') && pmDB.projects[0].oem !== 'OEM du ZIP' && !document.getElementById('zp-ov')));
+  }
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

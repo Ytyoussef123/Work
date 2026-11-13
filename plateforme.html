@@ -55,7 +55,7 @@
   })();
 })();
 </script>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><meta name="theme-color" content="#0d0f14">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><meta name="theme-color" content="#0d0f14"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" type="image/png" href="icons/icon-192.png"><link rel="apple-touch-icon" href="icons/apple-touch-icon.png"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black"><meta name="apple-mobile-web-app-title" content="Plateforme">
 <title>Plateforme — Achats · Engineering · Project Master</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=Barlow:ital,wght@0,400;0,500;0,600;1,400&family=Barlow+Semi+Condensed:wght@500;600&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -8742,17 +8742,17 @@ async function hpBackup() {
     toast('↓', 'Sauvegarde .zip téléchargée');
   } catch (e) { toast('✕', 'Échec : ' + e.message, 'var(--danger)'); }
 }
-async function hpRestore(input) {
+async function hpRestore(input) {   // (V10) d'abord choisir ce qu'on prend dans le ZIP : zipPick (fin du fichier)
   const f = input.files[0]; input.value = ''; if (!f) return;
-  if (!confirm('Restaurer depuis « ' + f.name + ' » ?\nLes données actuelles des 3 applications seront remplacées.')) return;
-  try {
+  if (typeof window.zipPick === 'function') return window.zipPick(f);
+  if (!confirm('Restaurer depuis « ' + f.name + ' » ?\nLes données actuelles des 3 applications seront remplacées.')) return; return hpRestoreAll(f); }
+async function hpRestoreAll(f) { try {   // remplacer les 3 apps par le ZIP (ancien comportement, « Tout remplacer… »)
     await loadPlatformZip(f);
     if (typeof platformSync === 'function') platformSync(); // mettre à jour le fichier lié avec les données restaurées
     if (typeof refreshAllApps === 'function') refreshAllApps();
     hpCache = null; hpRender();
     toast('✓', 'Plateforme restaurée depuis le ZIP');
-  } catch (e) { toast('✕', 'ZIP illisible : ' + e.message, 'var(--danger)'); }
-}
+  } catch (e) { toast('✕', 'ZIP illisible : ' + e.message, 'var(--danger)'); } }
 
 // ─── RENDU DE L'ACCUEIL ────────────────────────────────────────────────────
 function hpRender() {
@@ -9154,7 +9154,7 @@ function hpOpenAlerts() {
 }
 
 // Exposer
-Object.assign(window, { hpOpenPal, hpClosePal, hpBackup, hpRestore, hpOpenAlerts, hpRender });
+Object.assign(window, { hpOpenPal, hpClosePal, hpBackup, hpRestore, hpRestoreAll, hpOpenAlerts, hpRender, hpReload: () => { hpCache = null; hpRender(); } });
 
 document.addEventListener('DOMContentLoaded', () => {
   hpBuild();
@@ -11854,7 +11854,7 @@ css.textContent = `
      + « ↻ Actualiser », « ⚙ Réglages », « ⛶ Plein écran » (V9, popExtras) */
   #fb-pop .fb-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
   #fb-pop .fb-row > .btn{justify-content:center;min-width:0;white-space:normal;text-align:center;line-height:1.25}
-  #fb-pop .fb-row > [data-a="in"],#fb-pop .fb-row > [data-a="reset"]{grid-column:1/-1}
+  #fb-pop .fb-row > [data-a="in"],#fb-pop .fb-row > [data-a="reset"],#fb-pop .fb-row > [data-m="install"]{grid-column:1/-1}
   #fb-pop .m-pop{display:inline-flex}
 
   /* Fenêtres : feuilles qui montent du bas */
@@ -12173,6 +12173,35 @@ function fsToggle() {
   if (on) fsEnter(); else fsExit();
 }
 
+// ─── APP INSTALLÉE (V10) : manifest.webmanifest + icons/ (icône sur l'écran d'accueil, ouverture en plein écran).
+//     ☁ › « 📲 Installer l'app » : la proposition de Chrome si elle est arrivée, sinon le mode d'emploi (Android, iPhone).
+//     Dans l'app installée : pas de bouton d'installation, et pas de ⛶ (elle est déjà en plein écran). ──
+// (Chrome annonce aussi « display-mode: fullscreen » quand ⛶ a mis la page en plein écran dans un onglet : ce n'est
+//  l'app installée que si ce plein écran-là n'est pas actif)
+const appFull = () => matchMedia('(display-mode: fullscreen)').matches && !fsOn();
+const isApp = () => appFull() || matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+let installEvt = null;   // gardée sans preventDefault : Chrome peut aussi montrer sa propre bannière
+window.addEventListener('beforeinstallprompt', e => { installEvt = e; });
+window.addEventListener('appinstalled', () => { installEvt = null; toast('✓', 'App installée : ouvrez-la depuis son icône sur l\'écran d\'accueil.'); });
+function installApp() {
+  const ev = installEvt; installEvt = null;   // une proposition ne sert qu'une fois
+  if (ev) { try { const p = ev.prompt(); if (p && p.catch) p.catch(installHelp); return; } catch (e) {} }
+  installHelp();
+}
+function installHelp() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const old = $('m-install'); if (old) old.remove();
+  const ov = document.createElement('div'); ov.className = 'fb-ov'; ov.id = 'm-install';
+  ov.innerHTML = '<div class="fb-dlg"><h3>📲 Installer l\'app sur l\'écran d\'accueil</h3>' + (ios
+    ? '<p><b>iPhone / iPad (Safari)</b> : bouton <b>Partager</b> (carré avec une flèche vers le haut) › <b>« Sur l\'écran d\'accueil »</b> › <b>Ajouter</b>.</p>' +
+      '<p>L\'app installée a sa propre mémoire : connectez-vous une fois avec Google (☁) pour retrouver les données de l\'équipe. Sur iPhone, les rappels 🔔 ne marchent que dans l\'app installée.</p>'
+    : '<p><b>Android (Chrome)</b> : menu <b>⋮</b> en haut à droite › <b>« Installer l\'application »</b> (ou « Ajouter à l\'écran d\'accueil ») › <b>Installer</b>.</p>' +
+      '<p>Vos données et votre connexion restent les mêmes.</p>') +
+    '<p>L\'app s\'ouvre ensuite en plein écran depuis son icône, sans la barre du navigateur.</p><div class="fb-row"><button type="button" class="btn bp btn-sm">Compris</button></div></div>';
+  ov.addEventListener('click', e => { if (e.target === ov || e.target.closest('button')) ov.remove(); });
+  document.body.appendChild(ov);
+}
+
 // « ↻ Actualiser » : recharge l'app (dernière version + données). Rien n'est perdu : un projet ouvert est enregistré
 // en quittant la page (V7), les envois en attente sont gardés (fb_dirty). Hors ligne : on ne recharge pas (l'app
 // ne s'ouvrirait plus sans réseau). Un achat en cours de saisie demande confirmation.
@@ -12188,7 +12217,7 @@ function reloadApp() {
 // ─── PANNEAU ☁ (V9) : « ↻ Actualiser » à côté de « Synchroniser », « ⚙ Réglages » (Project Master) à côté de
 //     « 🔔 Rappels », « ⛶ Plein écran ». La synchro (V2) redessine le panneau à chaque changement d'état : les boutons
 //     sont remis après chaque dessin, dans l'ordre POP_ORDER. Masqués sur ordinateur (CSS). ──
-const POP_ORDER = ['in', 'now', 'm:reload', 'reset', 'rappels', 'm:reglages', 'm:fs', 'out'];
+const POP_ORDER = ['in', 'now', 'm:reload', 'reset', 'rappels', 'm:reglages', 'm:fs', 'out', 'm:install'];
 function popExtras() {
   const pop = $('fb-pop'); if (!pop) return;
   const mk = (m, txt) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn bs btn-sm m-pop'; b.dataset.m = m; b.textContent = txt; return b; };
@@ -12196,7 +12225,8 @@ function popExtras() {
   const fill = () => {
     const row = pop.querySelector('.fb-row'); if (!row || row.querySelector('.m-pop')) return;
     row.append(mk('reload', '↻ Actualiser'), mk('reglages', '⚙ Réglages'));
-    if (fsOK()) row.append(mk('fs', fsWanted() ? '⛶ Écran normal' : '⛶ Plein écran'));
+    if (fsOK() && !appFull()) row.append(mk('fs', fsWanted() ? '⛶ Écran normal' : '⛶ Plein écran'));
+    if (!isApp()) { const i = mk('install', '📲 Installer l\'app'); i.classList.replace('bs', 'bp'); row.append(i); }   // (V10)
     [...row.children].sort((a, b) => rank(a) - rank(b)).forEach(b => row.appendChild(b));
   };
   new MutationObserver(fill).observe(pop, { childList: true });   // pas subtree : nos propres ajouts ne relancent rien
@@ -12207,6 +12237,7 @@ function popExtras() {
     if (b.dataset.m === 'reload') reloadApp();
     else if (b.dataset.m === 'reglages') { window.switchApp('projects'); window.pmGo('settings'); toTop(); }
     else if (b.dataset.m === 'fs') fsToggle();
+    else if (b.dataset.m === 'install') installApp();
   });
 }
 
@@ -12258,7 +12289,7 @@ function init() {
   searchIcon();
   popExtras();
   // Plein écran activé : le premier toucher le rétablit (il faut un geste de l'utilisateur) ; pas sur un champ (clavier)
-  document.addEventListener('click', e => { const t = e.target; if (MQ.matches && fsWanted() && !fsOn() && fsOK() && !(t.closest && t.closest('.m-pop, input, select, textarea'))) fsEnter(); }, true);
+  document.addEventListener('click', e => { const t = e.target; if (MQ.matches && fsWanted() && !fsOn() && fsOK() && !appFull() && !(t.closest && t.closest('.m-pop, input, select, textarea'))) fsEnter(); }, true);
   mirrorBadge('home', $('hp-rail-dot'));
   mirrorBadge('achats', $('xa-nc-liv'));
   mirrorSync();
@@ -12267,6 +12298,311 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', () => { try { init(); } catch (e) { console.error('Vue téléphone', e); } });
 
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// IMPORT D'UN ZIP : CHOISIR CE QU'ON PREND (V10)
+// Avant : « Restaurer depuis un .zip » remplaçait les données des 3 apps (« seront remplacées »).
+// Maintenant le ZIP est lu sans rien écrire ; on montre ce qu'il contient, base par base et élément par élément
+// (nouveau / différent / identique) et on n'ajoute que ce qui est coché. Un élément déjà présent et coché est
+// fusionné (merge3 de la synchro, V7) : ajouts des deux côtés gardés (commentaires, notes, jalons, pièces jointes),
+// une case vide du ZIP n'efface rien, pour une même case la version la plus récente (sinon celle du ZIP).
+// Ce dont un élément coché a besoin et qui manque ici (client ou product line d'un projet,
+// budget ou fiche fournisseur d'un achat…) est pris aussi. « Tout remplacer… » = ancien comportement (hpRestoreAll).
+// Les écritures passent par les fonctions des apps : la synchro les envoie comme une saisie ordinaire.
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const clone = o => JSON.parse(JSON.stringify(o));
+// Même contenu ? clés triées, nombres = textes, cases vides ignorées, n° de ligne (renuméroté à chaque import) ignoré
+function canon(v, top) {
+  if (Array.isArray(v)) return '[' + v.map(x => canon(x)).join(',') + ']';
+  if (v && typeof v === 'object') return '{' + Object.keys(v).filter(k => !(top && k === 'line') && v[k] !== '' && v[k] != null).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+  return JSON.stringify(String(v));
+}
+// Fusion d'un élément du ZIP avec celui d'ici (merge3 de la synchro, V7) : ajouts des deux côtés gardés (listes par
+// identifiant : commentaires, notes, jalons, pièces jointes) ; une case vide du ZIP n'efface jamais une case remplie ;
+// pour une même case remplie des deux côtés, la version la plus récente (modified…), sinon celle du ZIP.
+const empty = x => x === '' || x == null;
+function keepFilled(r, l) {   // après fusion : une case vide (ou absente) ne remplace pas une case remplie d'ici, à tous les niveaux
+  if (Array.isArray(r) && Array.isArray(l)) {
+    const lm = new Map(l.filter(x => x && typeof x === 'object' && x.id != null).map(x => [String(x.id), x]));
+    return r.map(x => x && typeof x === 'object' && x.id != null && lm.has(String(x.id)) ? keepFilled(x, lm.get(String(x.id))) : x);
+  }
+  if (r && l && typeof r === 'object' && typeof l === 'object' && !Array.isArray(r) && !Array.isArray(l)) {
+    const o = Object.assign({}, r);
+    for (const k of Object.keys(l)) o[k] = empty(o[k]) ? (empty(l[k]) ? o[k] : l[k]) : keepFilled(o[k], l[k]);
+    return o;
+  }
+  return r;
+}
+const stamp = o => { const v = o && (o.modified || o.modifiedAt || o.updatedAt); const n = typeof v === 'number' ? v : Date.parse(v || ''); return isNaN(n) ? 0 : n; };
+const m3 = (a, b) => window.fbSync && fbSync.merge3 ? fbSync.merge3(undefined, a, b) : a;
+function merge(zip, loc) { return keepFilled(stamp(loc) > stamp(zip) ? m3(loc, zip) : m3(zip, loc), loc); }
+const supLocal = () => { try { return JSON.parse(localStorage.getItem('hp_suppliers') || '{}') || {}; } catch (e) { return {}; } };
+const asMap = v => Array.isArray(v) ? new Map(v.map((o, i) => [o && o.id != null && o.id !== '' ? String(o.id) : '#' + i, o])) : new Map(Object.entries(v || {}));
+// Pièces jointes : même base que la couche Achats+ (IndexedDB hp_files, magasin files)
+let fdb;
+const filePut = (id, v) => (fdb = fdb || new Promise((res, rej) => { const r = indexedDB.open('hp_files', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }))
+  .then(db => new Promise((res, rej) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put(v, id); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }));
+
+// Bases et collections, dans l'ordre d'affichage : [clé, titre, nom court pour le bilan]
+const BASES = [
+  { key: 'pm', icon: '🗂️', title: 'Project Master', colls: [['projects', 'Projets', 'projet(s)'], ['customers', 'Clients', 'client(s)'], ['lines', 'Product lines', 'product line(s)'], ['actions', 'Actions', 'action(s)']] },
+  { key: 'eng', icon: '⚙️', title: 'Engineering', colls: [['projects', 'Projets', 'projet(s) Engineering'], ['solutions', 'Solutions', 'solution(s)'], ['acceptances', 'Réceptions', 'réception(s)'], ['companies', 'Sociétés', 'société(s)'], ['types', 'Types', 'type(s)'], ['operations', 'Opérations', 'opération(s)']] },
+  { key: 'ach', icon: '🛒', title: 'Achats', colls: [['achats', 'Achats', 'achat(s)'], ['budgets', 'Budgets', 'budget(s)'], ['fournisseurs', 'Fiches fournisseurs', 'fiche(s) fournisseur']] }
+];
+const collInfo = coll => { const [b, c] = coll.split(':'), B = BASES.find(x => x.key === b); return B.colls.find(x => x[0] === c); };
+
+// ─── Lecture du ZIP sans rien écrire (mêmes règles que loadPlatformZip et la couche Achats+) ───
+async function readZip(file) {
+  const zip = await JSZip.loadAsync(file), z = { files: {} };
+  zip.forEach((path, f) => {
+    if (f.dir || !path.startsWith('attachments/')) return;
+    const b = path.slice(12), cut = b.indexOf('__');
+    if (cut > 0) z.files[b.slice(0, cut)] = { f, name: b.slice(cut + 2) };
+  });
+  const csv = zip.file('purchasing_followup.csv');
+  const parsed = csv ? parsePurchasesCsv(await csv.async('string')) : null;
+  if (parsed) {
+    z.achats = parsed.data; z.settings = parsed.settings || null;
+    const ef = zip.file('purchasing_extras.json');
+    if (ef) {
+      const { extras = {}, suppliers } = JSON.parse(await ef.async('string'));
+      const byLine = {}; Object.values(extras).forEach(x => { if (x.line != null) byLine[x.line] = x; });
+      z.achats.forEach(p => { const x = extras[p.id] || byLine[p.line]; if (x) { const { line, ...rest } = x; Object.assign(p, rest); } });
+      if (suppliers && typeof suppliers === 'object') z.suppliers = suppliers;
+    }
+  }
+  const ej = zip.file('engineering.json');
+  if (ej) {
+    z.eng = JSON.parse(await ej.async('string'));
+    for (const s of (z.eng.solutions || [])) {
+      if (!s.specHtml) continue;
+      for (const mt of [...s.specHtml.matchAll(/src="images\/([^"]+)"/g)]) {
+        const f = zip.file('images/' + mt[1]);
+        if (f) s.specHtml = s.specHtml.replace('images/' + mt[1], 'data:image/' + (mt[1].split('.').pop() || 'png') + ';base64,' + await f.async('base64'));
+      }
+    }
+  }
+  const pj = zip.file('project_master.json');
+  if (pj) z.pm = JSON.parse(await pj.async('string'));
+  return z;
+}
+
+// ─── Ce que contient le ZIP, comparé à ce qui est ici ───
+function itemsOf(z) {
+  const src = {};
+  if (z.pm) { if (typeof pmInit === 'function' && !pmInited) pmInit(); BASES[0].colls.forEach(([c]) => { if (Array.isArray(z.pm[c])) src['pm:' + c] = [z.pm[c], pmDB[c] || []]; }); }
+  if (z.eng) { if (typeof engInit === 'function' && !engInited) engInit(); BASES[1].colls.forEach(([c]) => { if (Array.isArray(z.eng[c])) src['eng:' + c] = [z.eng[c], engDB[c] || []]; }); }
+  if (z.achats) {
+    src['ach:achats'] = [z.achats, purchases];
+    if (z.settings && Array.isArray(z.settings.budgets)) src['ach:budgets'] = [z.settings.budgets, S.budgets || []];
+    if (z.suppliers) src['ach:fournisseurs'] = [z.suppliers, supLocal()];
+  }
+  const items = [];
+  for (const [coll, [zs, ls]] of Object.entries(src)) {
+    const lm = asMap(ls);
+    for (const [id, o] of asMap(zs)) {
+      if (!o || typeof o !== 'object') continue;
+      const loc = lm.get(id), [label, sub] = labelOf(coll, o, id);
+      // identique = la fusion ne changerait rien ici (le ZIP n'apporte rien de plus, même s'il lui manque des cases)
+      items.push({ coll, base: coll.split(':')[0], id, zip: o, label, sub, status: !loc ? 'new' : canon(merge(clone(o), clone(loc)), true) === canon(loc, true) ? 'same' : 'diff', on: !loc });
+    }
+  }
+  return items;
+}
+function labelOf(coll, o, id) {
+  if (coll === 'ach:fournisseurs') return [id, o.contact || o.email || ''];
+  if (coll === 'ach:achats') return [[o.numPO && 'PO ' + o.numPO, o.description || o.reference].filter(Boolean).join(' · ') || id, [o.fournisseur, o.projet].filter(Boolean).join(' · ')];
+  if (coll === 'ach:budgets') return [o.label || o.nom || o.name || id, [o.projet, o.type].filter(Boolean).join(' · ')];
+  return [String(o.name || o.title || o.label || o.nom || o.text || o.description || id).slice(0, 140), o.code || o.numero || o.internalNum || ''];
+}
+// Ce dont les éléments cochés ont besoin et qui manque ici : un identifiant (ou un nom de fournisseur) cité
+// dans un élément coché et qui est celui d'un élément nouveau de la même base → coché aussi
+function withDeps(items) {
+  const idx = new Map(); items.forEach(it => { if (it.status === 'new') idx.set(it.base + '|' + it.id, it); });
+  const added = [], queue = items.filter(it => it.on && it.status !== 'same'), seen = new Set();
+  const walk = (it, v) => {
+    if (typeof v === 'string') { const d = idx.get(it.base + '|' + v); if (d && !d.on) { d.on = true; added.push(d); queue.push(d); } }
+    else if (v && typeof v === 'object') Object.values(v).forEach(x => walk(it, x));
+  };
+  while (queue.length) { const it = queue.shift(); if (seen.has(it)) continue; seen.add(it); walk(it, it.zip); }
+  return added;
+}
+
+// ─── Écriture de la sélection, par les fonctions normales des apps ───
+async function apply(z, items) {
+  const deps = withDeps(items), todo = items.filter(it => it.on && it.status !== 'same');
+  const by = c => todo.filter(it => it.coll === c);
+  const upsert = (arr, it) => { const i = arr.findIndex(o => o && String(o.id) === it.id); if (i < 0) arr.push(clone(it.zip)); else arr[i] = merge(clone(it.zip), arr[i]); };
+  if (todo.some(it => it.base === 'pm')) {
+    if (typeof pmInit === 'function' && !pmInited) pmInit();
+    BASES[0].colls.forEach(([c]) => { const l = by('pm:' + c); if (!l.length) return; if (!Array.isArray(pmDB[c])) pmDB[c] = []; l.forEach(it => upsert(pmDB[c], it)); });
+    pmSave();
+  }
+  if (todo.some(it => it.base === 'eng')) {
+    if (typeof engInit === 'function' && !engInited) engInit();
+    BASES[1].colls.forEach(([c]) => { const l = by('eng:' + c); if (!l.length) return; if (!Array.isArray(engDB[c])) engDB[c] = []; l.forEach(it => upsert(engDB[c], it)); });
+    engSave();
+  }
+  if (todo.some(it => it.base === 'ach')) {
+    const pa = by('ach:achats'), bl = by('ach:budgets'), fl = by('ach:fournisseurs');
+    // d'abord les fichiers des pièces jointes : la synchro les envoie avec l'achat ou le budget
+    const want = new Set(); [...pa, ...bl].forEach(it => (it.zip.attachments || []).forEach(a => { if (a && a.id && z.files[a.id]) want.add(a.id); }));
+    for (const id of want) { const { f, name } = z.files[id]; try { const b = await f.async('blob'); await filePut(id, { blob: b, name, type: b.type }); } catch (e) { console.warn('Pièce jointe du ZIP', id, e); } }
+    pa.forEach(it => upsert(purchases, it));
+    purchases.forEach((p, i) => p.line = i + 1);
+    if (bl.length) { if (!Array.isArray(S.budgets)) S.budgets = []; bl.forEach(it => upsert(S.budgets, it)); }
+    if (fl.length) { const sup = supLocal(); fl.forEach(it => { sup[it.id] = it.id in sup ? merge(clone(it.zip), sup[it.id]) : clone(it.zip); }); localStorage.setItem('hp_suppliers', JSON.stringify(sup)); }
+    const list = (k, vals) => { if (!Array.isArray(S[k])) S[k] = []; vals.forEach(v => { if (v && !S[k].includes(v)) S[k].push(v); }); };   // comme l'import CSV
+    const ps = pa.map(it => it.zip);
+    list('projets', ps.map(p => p.projet)); list('fournisseurs', ps.map(p => p.fournisseur)); list('references', ps.map(p => p.reference)); list('acheteurs', ps.map(p => p.acheteur));
+    saveSettings(); try { populateSelects(); renderFilters(); } catch (e) {} autosave(); try { updateAll(); } catch (e) {}
+  }
+  if (typeof platformSync === 'function') platformSync();
+  if (typeof refreshAllApps === 'function') refreshAllApps();
+  if (typeof window.hpReload === 'function') window.hpReload();
+  return { todo, deps };
+}
+function summary({ todo, deps }) {
+  const count = l => { const m = new Map(); l.forEach(it => { const k = collInfo(it.coll)[2]; m.set(k, (m.get(k) || 0) + 1); }); return [...m].map(([k, n]) => n + ' ' + k).join(', '); };
+  const add = todo.filter(it => it.status === 'new'), upd = todo.filter(it => it.status === 'diff');
+  return 'Pris dans le ZIP — ajouté : ' + (count(add) || 'rien') + (upd.length ? ' ; mis à jour : ' + count(upd) : '') + (deps.length ? ' (dont ' + deps.length + ' élément(s) lié(s), ajouté(s) d\'office)' : '');
+}
+
+// ─── Fenêtre de choix ───
+const css = document.createElement('style');
+css.textContent = `
+#zp-ov{position:fixed;inset:0;z-index:9600;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px}
+#zp-ov .zp-dlg{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:14px;width:640px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.45);font-size:13px}
+#zp-ov .zp-hd{display:flex;align-items:center;gap:10px;padding:14px 16px 6px;font-size:15px}
+#zp-ov .zp-hd b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#zp-ov .zp-x{background:none;border:0;color:var(--muted);font-size:16px;cursor:pointer;padding:4px 6px}
+#zp-ov .zp-p{margin:0;padding:4px 16px 8px;color:var(--dim);line-height:1.5}
+#zp-ov .zp-q{margin:0 16px 8px;width:auto}
+#zp-ov .zp-body{overflow:auto;padding:0 16px;flex:1 1 auto;min-height:0;overscroll-behavior:contain}
+#zp-ov .zp-base{border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden}
+#zp-ov .zp-bh{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface2)}
+#zp-ov .zp-tog{flex:1;display:flex;align-items:baseline;gap:4px 8px;flex-wrap:wrap;background:none;border:0;color:var(--text);font:700 13.5px 'DM Sans',sans-serif;text-align:left;cursor:pointer;padding:0}
+#zp-ov .zp-tog::after{content:"▾";margin-left:auto;color:var(--muted)}
+#zp-ov .zp-base.shut .zp-tog::after{content:"▸"}
+#zp-ov .zp-cnt{font-weight:500;font-size:11.5px;color:var(--muted)}
+#zp-ov .zp-base.shut .zp-list{display:none}
+#zp-ov .zp-list{padding:2px 12px 8px}
+#zp-ov .zp-ch{display:flex;align-items:center;gap:6px;margin:10px 0 2px;font:700 10.5px 'DM Sans',sans-serif;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+#zp-ov .zp-tg{background:none;border:1px solid var(--border);border-radius:6px;color:var(--accent2);font:600 10.5px 'DM Sans',sans-serif;padding:1px 8px;cursor:pointer;text-transform:none;letter-spacing:0}
+#zp-ov .zp-it{display:flex;align-items:center;gap:10px;padding:8px 2px;margin:0;border-bottom:1px solid var(--border);cursor:pointer;text-transform:none;letter-spacing:0;font-weight:400;color:var(--text);font-size:13px}
+#zp-ov .zp-it[hidden]{display:none}
+#zp-ov .zp-l{flex:1;min-width:0;word-break:break-word;line-height:1.3}
+#zp-ov .zp-l small{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#zp-ov .zp-b{flex-shrink:0;font:700 10px 'DM Sans',sans-serif;padding:2px 7px;border-radius:9px;text-transform:uppercase;letter-spacing:.04em}
+#zp-ov .zp-b.new{color:var(--accent);background:rgba(0,200,160,.12)}
+#zp-ov .zp-b.diff{color:var(--warn);background:rgba(245,166,35,.14)}
+#zp-ov .zp-same{color:var(--muted);font-size:11.5px;padding:6px 2px}
+#zp-ov input[type=checkbox]{-webkit-appearance:auto;appearance:auto;width:18px;height:18px;min-width:18px;padding:0;margin:0;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
+#zp-ov .zp-ft{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--border)}
+#zp-ov .zp-n{margin-right:auto;color:var(--muted);font-size:12px}
+@media (max-width:768px){
+  #zp-ov{align-items:flex-end;padding:0}
+  #zp-ov .zp-dlg{width:100%;max-height:92vh;border-radius:18px 18px 0 0;padding-bottom:env(safe-area-inset-bottom,0px)}
+  #zp-ov .zp-n{flex-basis:100%;margin:0}
+  #zp-ov .zp-ft .btn{flex:1 1 auto;justify-content:center}
+}`;
+document.head.appendChild(css);
+
+function dialog(file, items) {
+  return new Promise(resolve => {
+    const old = document.getElementById('zp-ov'); if (old) old.remove();
+    const ov = document.createElement('div'); ov.id = 'zp-ov';
+    const nb = { new: 0, diff: 0, same: 0 }; items.forEach(it => nb[it.status]++);
+    let h = '<div class="zp-dlg" role="dialog" aria-modal="true" aria-labelledby="zp-t"><div class="zp-hd"><b id="zp-t">📦 ' + esc(file.name) + '</b><button type="button" class="zp-x" data-z="cancel" aria-label="Fermer">✕</button></div>';
+    if (!items.length) h += '<p class="zp-p">Ce fichier ne contient pas de données de la plateforme (achats, Engineering ou Project Master).</p>';
+    else if (!nb.new && !nb.diff) h += '<p class="zp-p">Tout le contenu de ce ZIP est déjà ici : rien à ajouter.</p>';
+    else {
+      h += '<p class="zp-p">Cochez ce que vous voulez prendre : <b>rien d\'autre ne change</b>. <span class="zp-b new">nouveau</span> : ajouté. <span class="zp-b diff">différent</span>, si coché : complété (ajouts des deux côtés gardés, rien d\'effacé ; pour une même case, la version la plus récente).</p>' +
+        '<input type="search" class="zp-q" placeholder="Filtrer : nom, code, PO, fournisseur…" aria-label="Filtrer la liste"><div class="zp-body">';
+      for (const B of BASES) {
+        const bi = items.filter(it => it.base === B.key); if (!bi.length) continue;
+        const c = s => bi.filter(it => it.status === s).length, open = c('new') + c('diff') > 0;   // rien à prendre : partie repliée
+        const cnt = [c('new') && c('new') + ' nouveau(x)', c('diff') && c('diff') + ' différent(s)', c('same') && c('same') + ' identique(s)'].filter(Boolean).join(' · ');
+        h += '<section class="zp-base' + (open ? '' : ' shut') + '" data-base="' + B.key + '"><div class="zp-bh">' + (open ? '<input type="checkbox" data-all="' + B.key + '" aria-label="Tout ' + B.title + '">' : '') +
+          '<button type="button" class="zp-tog" aria-expanded="' + open + '">' + B.icon + ' ' + B.title + ' <span class="zp-cnt">' + cnt + '</span></button></div><div class="zp-list">';
+        const sameOnly = [];   // listes sans rien de nouveau : une seule ligne « Déjà ici, identiques : … »
+        for (const [cc, cl, short] of B.colls) {
+          const ci = bi.filter(it => it.coll === B.key + ':' + cc); if (!ci.length) continue;
+          const shown = ci.filter(it => it.status !== 'same'), sameN = ci.length - shown.length, key = B.key + ':' + cc;
+          if (!shown.length) { sameOnly.push(sameN + ' ' + short); continue; }
+          h += '<div class="zp-coll"><div class="zp-ch">' + cl + (shown.length > 1 ? ' <button type="button" class="zp-tg" data-coll="' + key + '" data-set="1">Tout</button><button type="button" class="zp-tg" data-coll="' + key + '" data-set="0">Rien</button>' : '') + '</div>';
+          shown.forEach(it => {
+            h += '<label class="zp-it" data-k="' + esc(it.coll + '|' + it.id) + '" data-q="' + esc((it.label + ' ' + it.sub).toLowerCase()) + '"><input type="checkbox" data-i="' + items.indexOf(it) + '"' + (it.on ? ' checked' : '') + '><span class="zp-l">' + esc(it.label) +
+              (it.sub ? '<small>' + esc(it.sub) + '</small>' : '') + '</span><span class="zp-b ' + it.status + '">' + (it.status === 'new' ? 'nouveau' : 'différent') + '</span></label>';
+          });
+          if (sameN) h += '<div class="zp-same">+ ' + sameN + ' identique(s), déjà ici</div>';
+          h += '</div>';
+        }
+        if (sameOnly.length) h += '<div class="zp-same">Déjà ici, identiques : ' + sameOnly.join(', ') + '</div>';
+        h += '</div></section>';
+      }
+      h += '</div>';
+    }
+    h += '<div class="zp-ft"><span class="zp-n"></span><button type="button" class="btn bs btn-sm" data-z="cancel">Annuler</button>' +
+      (items.length ? '<button type="button" class="btn bs btn-sm" data-z="all" title="Ancien comportement : les données des 3 apps sont remplacées par celles du ZIP">Tout remplacer…</button>' : '') +
+      (nb.new || nb.diff ? '<button type="button" class="btn bp btn-sm" data-z="ok">Ajouter la sélection</button>' : '') + '</div></div>';
+    ov.innerHTML = h;
+    document.body.appendChild(ov);
+    const sync = () => ov.querySelectorAll('input[data-i]').forEach(cb => { cb.checked = items[+cb.dataset.i].on; });
+    const upd = () => {
+      const n = items.filter(it => it.on && it.status !== 'same').length, ok = ov.querySelector('[data-z="ok"]');
+      if (nb.new || nb.diff) ov.querySelector('.zp-n').textContent = n ? n + ' élément(s) coché(s)' : 'Rien de coché';
+      if (ok) ok.disabled = !n;
+      ov.querySelectorAll('input[data-all]').forEach(cb => {
+        const l = items.filter(it => it.base === cb.dataset.all && it.status !== 'same'), k = l.filter(it => it.on).length;
+        cb.checked = k === l.length; cb.indeterminate = k > 0 && k < l.length;
+      });
+    };
+    ov.addEventListener('change', e => {
+      const t = e.target;
+      if (t.dataset.i != null) items[+t.dataset.i].on = t.checked;
+      else if (t.dataset.all) { items.filter(it => it.base === t.dataset.all && it.status !== 'same').forEach(it => { it.on = t.checked; }); sync(); }
+      upd();
+    });
+    ov.addEventListener('click', e => {
+      const t = e.target.closest('button');
+      if (!t) { if (e.target === ov) done('cancel'); return; }
+      if (t.classList.contains('zp-tog')) { const s = t.closest('.zp-base'); s.classList.toggle('shut'); t.setAttribute('aria-expanded', String(!s.classList.contains('shut'))); return; }
+      if (t.dataset.coll) { items.filter(it => it.coll === t.dataset.coll && it.status !== 'same').forEach(it => { it.on = t.dataset.set === '1'; }); sync(); upd(); return; }
+      if (t.dataset.z) done(t.dataset.z);
+    });
+    const q = ov.querySelector('.zp-q');
+    if (q) q.addEventListener('input', () => { const v = q.value.trim().toLowerCase(); ov.querySelectorAll('.zp-it').forEach(l => { l.hidden = !!v && !l.dataset.q.includes(v); }); });
+    const onKey = e => { if (e.key === 'Escape') done('cancel'); };
+    document.addEventListener('keydown', onKey);
+    function done(v) { document.removeEventListener('keydown', onKey); ov.remove(); resolve(v); }
+    upd();
+  });
+}
+
+async function zipPick(file) {
+  let z;
+  try {
+    if (typeof JSZip === 'undefined') throw new Error('la bibliothèque ZIP n\'est pas chargée (connexion ?)');
+    z = await readZip(file);
+  } catch (e) { toast('✕', 'ZIP illisible : ' + e.message, 'var(--danger)'); return; }
+  const items = itemsOf(z), v = await dialog(file, items);
+  if (v === 'all') {
+    if (confirm('Tout remplacer par « ' + file.name + ' » ?\nLes données actuelles des 3 applications seront remplacées par celles du ZIP.')) await window.hpRestoreAll(file);
+    return;
+  }
+  if (v !== 'ok') return;
+  try { toast('✓', summary(await apply(z, items))); }
+  catch (e) { console.error('Import ZIP', e); toast('✕', 'Import interrompu : ' + e.message, 'var(--danger)'); }
+}
+window.zipPick = zipPick;
+// Pour les tests et le dépannage (console)
+window.zipImport = { readZip, itemsOf, withDeps, apply, canon };
 })();
 </script>
 </body>
