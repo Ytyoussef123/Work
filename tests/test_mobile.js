@@ -439,6 +439,19 @@ const MEASURE = `(() => {
     return rows.length > 0 && ctrls === 0 && txt && document.documentElement.scrollWidth <= W || { n: rows.length, ctrls, txt };
   }));
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'plan_actions.png') });
+  // ─── V18 : Planning (Gantt) lisible sur téléphone ───
+  await page.evaluate(() => { switchApp('projects'); pmGo('planning'); window.scrollTo(0, 0); });
+  await page.waitForTimeout(300);
+  await chk('Planning : colonne des noms étroite, barres et jalons visibles à côté, badges de retard entiers, barre d\'outils compacte dans l\'écran (avant : colonne de 380 px qui cachait tout le temps)', () => page.evaluate(() => {
+    const W = innerWidth, bar = document.querySelector('.gt-bar'), wrap = document.getElementById('gt-wrap'); if (!bar || !wrap) return { gantt: false };
+    const wr = wrap.getBoundingClientRect(), lw = document.querySelector('.gt-row .gt-lbl').getBoundingClientRect().width;
+    const ms = [...document.querySelectorAll('.gt-ms')].filter(e => { const r = e.getBoundingClientRect(); return r.left >= wr.left + lw && r.right <= wr.right && r.top >= wr.top && r.bottom <= wr.bottom; }).length;
+    const badges = [...document.querySelectorAll('.gt-row.proj .gt-lbl > span:last-child')].every(b => b.getBoundingClientRect().right <= b.parentElement.getBoundingClientRect().right + 0.5);
+    const out = [...bar.querySelectorAll('select,button,input')].filter(e => { const r = e.getBoundingClientRect(); return r.width && (r.right > W + 0.5 || r.left < -0.5); }).length;
+    const barH = bar.getBoundingClientRect().height;
+    return lw <= wr.width * 0.5 && ms > 0 && badges && out === 0 && barH <= 135 && document.documentElement.scrollWidth <= W || { lw, wrap: wr.width, ms, badges, out, barH };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'planning.png') });
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

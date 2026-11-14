@@ -9929,7 +9929,7 @@ const openProj = id => { if (typeof pmEditProject === 'function') pmEditProject(
 // ═══ PLANNING / GANTT ══════════════════════════════════════════════════════
 const G = { zoom: 'mois', proj: '', lateOnly: false, hideDone: false, closed: new Set((() => { try { const a = JSON.parse(localStorage.getItem('gt_closed') || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } })()) };
 const PPD = { semaine: 16, mois: 4.5, trimestre: 1.6 };
-const LBL = 380;
+let LBL = 380;   // largeur de la colonne des noms (V18 : plus étroite sur téléphone, calculée dans gtRender)
 
 function gtRows() {
   const rows = [];
@@ -9955,7 +9955,7 @@ function gtRows() {
 }
 
 function gtRender() {
-  const host = $('gt-host'); if (!host) return;
+  const host = $('gt-host'); if (!host) return; LBL = matchMedia('(max-width: 768px)').matches ? Math.max(130, Math.min(190, Math.round(innerWidth * 0.44))) : 380;   // V18 : téléphone, ~44 % de l'écran (380 px couvrait tout l'écran : les barres ne se voyaient jamais)
   const pm = PM();
   const rows = gtRows();
   const dates = [today()];
@@ -13224,6 +13224,61 @@ ${Object.entries(U).map(([k, c]) => `.pm-ap-row[data-u="${k}"] > td:first-child{
   .pm-ap-filters select{width:100%!important;min-width:0}
 }`;
 document.head.appendChild(css);
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// PLANNING (GANTT) : MISE EN PAGE (V18)
+// Avant, sur téléphone : la colonne des noms faisait 380 px (plus large que l'écran) et restait collée à gauche,
+// donc la zone du temps (barres, jalons) ne se voyait jamais, dates et badge « N retard » coupés ; la barre d'outils
+// prenait 5 lignes. Maintenant (gtRender : LBL ≈ 44 % de l'écran) : colonne des noms étroite, nom sur 2 lignes et
+// dates dessous, nombre de retards sous le nom du projet ; barres et jalons visibles à côté, défilement latéral ;
+// barre d'outils sur 3 lignes. Partout : les cases « Retards uniquement » / « Masquer les jalons faits » montrent
+// leur coche (avant : invisible, règle générale -webkit-appearance:none des champs).
+// ═══════════════════════════════════════════════════════════════════════════
+(function () {
+'use strict';
+const css = document.createElement('style');
+css.textContent = `
+.gt-bar input[type=checkbox]{-webkit-appearance:auto!important;appearance:auto!important;width:16px!important;height:16px;padding:0!important;margin:0!important;accent-color:var(--accent);cursor:pointer;flex-shrink:0}
+@media (max-width:768px){
+  #gt-host .gt-bar{gap:8px;margin-bottom:10px}
+  #gt-host .gt-bar::before,#gt-host .gt-bar::after{content:'';flex-basis:100%;height:0}
+  #gt-host .gt-bar::before{order:3}
+  #gt-host .gt-bar::after{order:7}
+  #gt-proj{order:1;flex:1 1 0;min-width:0;width:auto!important}
+  #gt-host .gt-bar > [data-today]{order:2;flex-shrink:0}
+  #gt-host .gt-bar > .gt-seg{order:4;flex:1 1 0;min-width:0}
+  .gt-seg button{flex:1 1 0;padding:8px 4px;font-size:13px}
+  #gt-host .gt-bar > [data-all]{order:5;flex-shrink:0;font-size:0!important;padding:8px 12px!important}
+  #gt-host .gt-bar > [data-all="close"]{order:6}
+  #gt-host .gt-bar > [data-all="open"]::after{content:'▾ Tout';font-size:12.5px}
+  #gt-host .gt-bar > [data-all="close"]::after{content:'▸ Tout';font-size:12.5px}
+  #gt-host .gt-bar > span[style*="flex:1"]{display:none}
+  #gt-host .gt-bar > label{order:8;font-size:13px!important;gap:7px!important}
+  #gt-host .gt-bar > label:has(#gt-done){font-size:0!important}
+  #gt-host .gt-bar > label:has(#gt-done)::after{content:'Masquer les faits';font-size:13px}
+  .gt-wrap{max-height:calc(100dvh - var(--m-hd,54px) - var(--m-tab,58px) - 190px);min-height:280px}
+  .gt-row{height:46px}
+  .gt-row.proj{height:44px}
+  .gt-lbl{padding:0 8px;font-size:11.5px}
+  .gt-row:not(.proj) > .gt-lbl{display:grid;grid-template-columns:auto auto minmax(0,1fr);grid-template-rows:auto auto;align-content:center;column-gap:5px;row-gap:2px;white-space:normal}
+  .gt-row:not(.proj) > .gt-lbl > span:nth-child(1){grid-row:1 / 3}
+  .gt-row:not(.proj) > .gt-lbl > span:nth-child(1)[style*="width:14px"]{width:2px!important}
+  .gt-row:not(.proj) > .gt-lbl > span:nth-child(1)[style*="width:28px"]{width:12px!important}
+  .gt-row:not(.proj) > .gt-lbl > span:nth-child(2){grid-row:1;align-self:start;margin-top:5px}
+  .gt-row:not(.proj) > .gt-lbl > .t{grid-column:3;grid-row:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.2;word-break:break-word}
+  .gt-row:not(.proj) > .gt-lbl > .gt-dt{grid-column:3;grid-row:2;margin:0;padding:0;font-size:9.5px}
+  .gt-row.proj > .gt-lbl{display:grid;grid-template-columns:auto minmax(0,1fr);align-content:center;column-gap:6px;row-gap:3px}
+  .gt-row.proj > .gt-lbl > span:first-child{grid-row:1 / 3}
+  .gt-row.proj > .gt-lbl > .t{grid-column:2;white-space:nowrap}
+  .gt-row.proj > .gt-lbl > span:last-child{grid-column:2;margin-left:0!important;justify-self:start;font-size:9px!important;padding:1px 7px!important}
+  .gt-leg{font-size:10.5px;gap:8px 12px}
+  .gt-leg > span:last-child{margin-left:0!important}
+}`;
+document.head.appendChild(css);
+// Passage téléphone ↔ ordinateur (rotation, fenêtre) : le Planning affiché est redessiné avec la bonne largeur de colonne
+matchMedia('(max-width: 768px)').addEventListener('change', () => { const pp = document.getElementById('ppage-planning'); if (pp && pp.style.display === 'block' && typeof window.gtRender === 'function') window.gtRender(); });
 })();
 </script>
 </body>

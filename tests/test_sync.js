@@ -786,6 +786,15 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   check('Plan d\'actions (ordinateur) : les 4 filtres visibles, urgence et statut en entier, ✕ de chaque ligne dans le panneau (avant : 3 filtres et ✕ cachés à droite, « Critiqu », « En c »)', apd.n > 0 && apd.filters === 4 && apd.filtIn && apd.delIn && apd.sel >= 70, apd);
   await A.evaluate(() => { pmDB.actions = pmDB.actions.filter(a => a.id !== 'AV17'); pmRenderActionPlan(); });
 
+  console.log('23. Planning (Gantt) : cases à cocher visibles, colonne des noms sur ordinateur (V18)');
+  await A.evaluate(() => { switchApp('projects'); pmGo('planning'); });
+  await A.waitForTimeout(300);
+  const gt1 = await A.evaluate(() => { const c = document.getElementById('gt-late'), lbl = document.querySelector('#gt-wrap .gt-row .gt-lbl'); return { app: c ? getComputedStyle(c).appearance : null, lbl: lbl ? Math.round(lbl.getBoundingClientRect().width) : 0 }; });
+  if (await A.$('#gt-late')) { await A.check('#gt-late'); await A.waitForTimeout(200); }
+  const gt2 = await A.evaluate(() => ({ checked: !!(document.getElementById('gt-late') || {}).checked, app: getComputedStyle(document.getElementById('gt-late')).appearance }));
+  if (await A.$('#gt-late')) { await A.uncheck('#gt-late'); await A.waitForTimeout(200); }
+  check('Planning : la coche des filtres « Retards uniquement » / « Masquer les jalons faits » se voit (avant : invisible, appearance:none) ; ordinateur : colonne des noms inchangée (380 px)', gt1.app && gt1.app !== 'none' && gt2.checked && gt2.app !== 'none' && gt1.lbl === 380, [gt1, gt2]);
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();
