@@ -452,6 +452,30 @@ const MEASURE = `(() => {
     return lw <= wr.width * 0.5 && ms > 0 && badges && out === 0 && barH <= 135 && document.documentElement.scrollWidth <= W || { lw, wrap: wr.width, ms, badges, out, barH };
   }));
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'planning.png') });
+  // ─── V19 : panneau Rappels (Projets › Settings), connecté, rappels activés, serveur absent ───
+  await page.evaluate(() => {
+    window.__be = async (op, a) => op === 'getDoc' ? (a.path.startsWith('membres/') ? { ok: 1 } : null) : op === 'list' ? [] : op === 'commit' ? true : null;   // compte autorisé, serveur vide
+    const reg = { showNotification: async () => {} };   // le faux site n'est pas « sécurisé » : service worker et notifications simulés
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, get: () => ({ register: async () => reg, ready: Promise.resolve(reg), addEventListener() {} }) });
+    if (!window.PushManager) window.PushManager = function () {};
+    if (!window.Notification) window.Notification = {};
+    Object.defineProperty(window.Notification, 'permission', { configurable: true, get: () => 'granted' });
+    window.Notification.requestPermission = async () => 'granted';
+    window.__mockLogin('a@test.fr');
+  });
+  await page.waitForFunction(() => fbSync.state() === 'ok', null, { timeout: 10000 }).catch(() => {});
+  await page.evaluate(() => { switchApp('projects'); pmGo('settings'); });
+  await page.waitForTimeout(300);
+  if (await page.$('#rp-panel [data-rap="on"]')) await tap('#rp-panel [data-rap="on"]');
+  await page.waitForTimeout(600);
+  await page.evaluate(() => { const p = document.getElementById('rp-panel'); if (p) p.scrollIntoView({ block: 'start' }); });
+  await chk('Rappels : les 3 étapes (serveur, cet appareil, test), boutons et commande à copier dans l\'écran, la commande va à la ligne (avant : « ✓ Activé » sans rien dire du serveur)', () => page.evaluate(() => {
+    const W = innerWidth, p = document.getElementById('rp-panel'); if (!p) return { panel: false };
+    const steps = p.querySelectorAll('.rp19-step').length, cmd = p.querySelector('.rp19-cmd');
+    const out = [...p.querySelectorAll('button, input, a, code, .rp19-step')].filter(e => { const r = e.getBoundingClientRect(); return r.width && (r.right > W + 0.5 || r.left < -0.5); }).length;
+    return steps === 3 && !!cmd && cmd.scrollWidth <= cmd.clientWidth + 1 && out === 0 && document.documentElement.scrollWidth <= W || { steps, cmd: !!cmd, cw: cmd && [cmd.scrollWidth, cmd.clientWidth], out, sw: document.documentElement.scrollWidth, st: fbSync.state() };
+  }));
+  if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'rappels.png') });
   await tap('#m-tabbar [data-app="home"]');
   await chk('onglet Accueil : pas de bouton ☰ (pas de tiroir sur l\'accueil)', () => page.evaluate(() => document.body.dataset.app === 'home' && getComputedStyle(document.getElementById('mobileMenuBtn')).display === 'none'));
   if (errors.length) { console.log('  Erreurs JavaScript :\n    ' + [...new Set(errors)].join('\n    ')); bad++; }

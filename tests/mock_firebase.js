@@ -4,7 +4,7 @@
   const listeners = {};
   window.__mockFire = (lid, changes) => { const l = listeners[lid]; if (l) l(changes); };
   let authCb = null, cur = null;
-  window.__mockLogin = email => { cur = email ? { email, displayName: 'Test ' + email } : null; if (authCb) authCb(cur); };
+  window.__mockLogin = email => { cur = email ? { email, displayName: 'Test ' + email, getIdToken: async () => 'idtok-' + email } : null; if (authCb) authCb(cur); };   // jeton : appels à la fonction rappelsTest (V19)
   class DocRef {
     constructor(path) { this.path = path; this.id = path.split('/').pop(); }
     collection(n) { return new CollRef(this.path + '/' + n); }

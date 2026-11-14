@@ -795,6 +795,84 @@ async function settle(...ps) { await sleep(400); for (const p of ps) { const t =
   if (await A.$('#gt-late')) { await A.uncheck('#gt-late'); await A.waitForTimeout(200); }
   check('Planning : la coche des filtres « Retards uniquement » / « Masquer les jalons faits » se voit (avant : invisible, appearance:none) ; ordinateur : colonne des noms inchangée (380 px)', gt1.app && gt1.app !== 'none' && gt2.checked && gt2.app !== 'none' && gt1.lbl === 380, [gt1, gt2]);
 
+  console.log('24. Rappels : état de chaque étape et vrai test par le serveur (V19)');
+  // Faux serveur des rappels : la vraie logique de functions/rappels.js (test) sur les documents du faux Firestore ;
+  // l'envoi FCM « arrive » sur le poste A comme un rappel reçu app ouverte. fnMode : 'down' (pas installé), 'ok', 'fcmerr'.
+  const RJ = require('../functions/rappels.js');
+  let fnMode = 'down'; const fnCalls = [];
+  const dref = p => ({ path: p, id: p.split('/').pop(), collection: n => ({ doc: id => dref(p + '/' + n + '/' + id) }),
+    get: async () => ({ exists: docs.has(p), data: () => docs.get(p) }),
+    set: async (v, o) => { docs.set(p, o && o.merge ? Object.assign({}, docs.get(p) || {}, v) : v); }, delete: async () => { docs.delete(p); } });
+  const fdb = { collection: c => ({ doc: id => dref(c + '/' + id) }) };
+  const nowTs = (h = 0) => ({ seconds: Math.floor(Date.now() / 1000) - h * 3600, nanoseconds: 0 });   // horodatage Firestore (lu en JSON)
+  await A.route('https://europe-west1-work-75094.cloudfunctions.net/**', async route => {
+    const rq = route.request(), cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization,content-type', 'access-control-allow-methods': 'POST' };
+    if (rq.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
+    if (fnMode === 'down') return route.abort();
+    const body = JSON.parse(rq.postData() || '{}'), m = /^Bearer idtok-(.+)$/.exec(rq.headers()['authorization'] || '');
+    fnCalls.push({ data: body.data, email: m && m[1] });
+    const r = await RJ.test({ db: fdb, auth: m ? { uid: 'u-' + m[1], token: { email: m[1] } } : null, data: body.data, ts: nowTs(),
+      send: async (token, msg) => {
+        if (fnMode === 'fcmerr') { const e = new Error('Auth error from APNS or Web Push Service'); e.code = 'messaging/third-party-auth-error'; throw e; }
+        setTimeout(() => A.evaluate(d => window.__mockMessaging.onMessage({ data: d }), msg).catch(() => {}), 50);   // l'app ouverte reçoit la notification
+      } });
+    return route.fulfill({ status: 200, headers: Object.assign({ 'content-type': 'application/json' }, cors), body: JSON.stringify({ result: r }) });
+  });
+  await stubPush(A);
+  const rpText = () => A.evaluate(() => (document.getElementById('rp-panel') || {}).textContent || '');
+  const click24 = async sel => { if (await A.$(sel)) { await A.click(sel); return true; } return false; };
+  await A.evaluate(() => { switchApp('projects'); pmGo('settings'); });
+  let ok24 = await waitFor(async () => /Ne répond pas\s: il n'est pas encore installé/.test(await rpText()));
+  const setup24 = await A.evaluate(() => { const d = document.querySelector('#rp-panel details[data-k="setup"]'), c = document.querySelector('#rp-panel .rp19-cmd'); return { open: !!(d && d.open), cmd: c ? c.textContent : '', copy: !!document.querySelector('#rp-panel [data-rp19="copy"]') }; });
+  check('serveur pas installé : étape 1 « Ne répond pas », marche à suivre ouverte avec la commande Cloud Shell (branche publiée, projet) et « Copier » (avant : rien ne le disait)',
+    ok24 && setup24.open && setup24.copy && /^npx -y firebase-tools@latest login --no-localhost && D=\$\(mktemp -d\) && git clone -q --depth 1 -b ccr-fcfbd0a0-m1mkvy https:\/\/github\.com\/ytyoussef123\/Work\.git /.test(setup24.cmd) && /npx -y firebase-tools@latest deploy --only functions --project work-75094$/.test(setup24.cmd), [ok24, setup24]);
+  await A.evaluate(() => { window.__notifs = []; });
+  await click24('#rp-panel [data-rap="test"]');
+  ok24 = await waitFor(async () => /Notification affichée par cet appareil seulement/.test(await rpText()));
+  const n24 = await A.evaluate(() => window.__notifs.map(n => n[0] + ' | ' + (n[1] && n[1].body)));
+  check('Tester sans serveur : notification locale qui le dit, et explication dans le panneau', ok24 && n24.some(s => /^🔔 Test des rappels \| Affichée par cet appareil seulement/.test(s)), [ok24, n24]);
+  fnMode = 'ok';
+  await click24('#rp-panel [data-rp19="srv"]');
+  ok24 = await waitFor(async () => /Installé · premier passage le prochain matin/.test(await rpText()));
+  check('serveur installé, pas encore passé : « Installé · premier passage le prochain matin »', ok24, (await rpText()).slice(0, 300));
+  docs.set('app/_rappels', Object.assign({}, docs.get('app/_rappels') || {}, { dernierPassage: nowTs(2), appareils: 1, envoyes: 1 }));
+  await click24('#rp-panel [data-rp19="srv"]');
+  ok24 = await waitFor(async () => /En service · dernier passage le \d\d\/\d\d à \d\d:\d\d/.test(await rpText()));
+  const st24 = await A.evaluate(() => { const s = document.querySelector('#rp-panel .rp19-step'), d = document.querySelector('#rp-panel details[data-k="setup"]'); return { ok: !!(s && s.classList.contains('ok')), open: !!(d && d.open) }; });
+  check('serveur passé ce matin : « En service · dernier passage le JJ/MM à HH:MM », étape 1 au vert, marche à suivre refermée', ok24 && st24.ok && !st24.open, [ok24, st24]);
+  await A.evaluate(() => { window.__notifs = []; });
+  fnCalls.length = 0;
+  await click24('#rp-panel [data-rap="test"]');
+  ok24 = await waitFor(async () => /✓ Envoyée par le serveur à \d\d:\d\d/.test(await rpText()));
+  const got24 = await waitFor(async () => (await A.evaluate(() => window.__notifs.map(n => n[1] && n[1].body))).some(b => /^Envoyé par le serveur/.test(b || '')));
+  const myId = await A.evaluate(() => fbSync.rappels.local().id);
+  check('Tester avec le serveur : appel avec le jeton Google et l\'identifiant de l\'appareil, vraie notification reçue, « ✓ Envoyée par le serveur »', ok24 && got24 && fnCalls.length === 1 && fnCalls[0].email === 'a@test.fr' && fnCalls[0].data.id === myId, [ok24, got24, fnCalls]);
+  ok24 = await waitFor(async () => /Dernier test envoyé par le serveur le \d\d\/\d\d/.test(await rpText()));
+  check('date du test notée par le serveur (app/_rappels/envois/<appareil>) et affichée sous « Cet appareil »', ok24 && !!(docs.get('app/_rappels/envois/' + myId) || {}).dernierTest, docs.get('app/_rappels/envois/' + myId));
+  fnMode = 'fcmerr';
+  await click24('#rp-panel [data-rap="test"]');
+  ok24 = await waitFor(async () => /✕ envoi refusé par Firebase Cloud Messaging\s: messaging\/third-party-auth-error/.test(await rpText()));
+  const ok24b = await waitFor(async () => /⚠ Dernier envoi refusé par Firebase le .*third-party-auth-error/.test(await rpText()));
+  check('envoi refusé par Firebase : le code s\'affiche au test et sous « Cet appareil »', ok24 && ok24b, (await rpText()).slice(0, 600));
+  fnMode = 'ok';
+  docs.delete('app/_rappels/appareils/' + myId);
+  await click24('#rp-panel [data-rp19="srv"]');
+  ok24 = await waitFor(async () => /pas inscrit côté serveur/.test(await rpText()) && !!(await A.$('#rp-panel [data-rap="on"]')));
+  check('appareil effacé côté serveur (jeton expiré) : « pas inscrit côté serveur » et bouton « Réactiver » (avant : « ✓ Activé »)', ok24, (await rpText()).slice(0, 400));
+  await click24('#rp-panel [data-rap="on"]');
+  ok24 = await waitFor(async () => docs.has('app/_rappels/appareils/' + myId) && /✓ Activé sur cet appareil · notifications autorisées · inscrit côté serveur/.test(await rpText()));
+  check('« Réactiver » : appareil réinscrit, étape 2 au vert (« inscrit côté serveur »)', ok24, (await rpText()).slice(0, 400));
+  members.delete('a@test.fr');
+  await click24('#rp-panel [data-rap="off"]');
+  await waitFor(async () => !!(await A.$('#rp-panel [data-rap="on"]')));
+  await click24('#rp-panel [data-rap="on"]');
+  ok24 = await waitFor(async () => /Firebase a refusé l'inscription \(permission-denied\)/.test(await rpText()));
+  members.add('a@test.fr');
+  check('inscription refusée par Firestore : affichée avec « Réactiver » (avant : « ✓ Activé » quand même)', ok24 && !!(await A.$('#rp-panel [data-rap="on"]')), (await rpText()).slice(0, 400));
+  await click24('#rp-panel [data-rap="on"]');
+  ok24 = await waitFor(async () => /✓ Activé sur cet appareil/.test(await rpText()) && !/refusé l'inscription/.test(await rpText()));
+  check('accès rendu : « Réactiver » réinscrit l\'appareil', ok24 && docs.has('app/_rappels/appareils/' + myId), (await rpText()).slice(0, 400));
+
   check('aucune erreur JavaScript', errors.length === 0, errors);
   console.log(`\n${pass} réussis, ${fail} échoués`);
   await browser.close();

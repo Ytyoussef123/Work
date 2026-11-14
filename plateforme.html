@@ -11398,7 +11398,7 @@ async function rpEnable() {
   if (!token) throw new Error('jeton de notification non obtenu');
   const L = rpLocal(); L.id = L.id || rnd() + rnd(); L.token = token; L.on = true;
   jset(RP_LS, L);
-  rpSaveDev(L).catch(e => console.warn('rappels', e));   // hors ligne : Firestore l'enverra au retour du réseau
+  if (window.rpV19) await window.rpV19.saved(rpSaveDev(L)); else rpSaveDev(L).catch(e => console.warn('rappels', e));   // hors ligne : Firestore l'enverra au retour du réseau (V19 : un refus est affiché)
 }
 async function rpDisable() {
   const L = rpLocal(); L.on = false; jset(RP_LS, L);
@@ -11411,7 +11411,7 @@ async function rpStartup() {   // poste déjà inscrit : jeton rafraîchi (il pe
   try {
     const token = await rpToken();
     if (token && token !== L.token) { L.token = token; jset(RP_LS, L); }
-    rpSaveDev(L).catch(() => {});
+    rpSaveDev(L).catch(e => { if (window.rpV19) window.rpV19.saveFailed(e); });   // V19 : refus affiché dans le panneau
     rpErr = '';
   } catch (e) { rpErr = (e && e.message) || String(e); }
   rpRenderSoon();
@@ -11461,7 +11461,7 @@ function rpPanel() {
     const b = e.target.closest('[data-rap]'); if (!b || rpBusy) return;
     const a = b.dataset.rap;
     if (a === 'go') { rpGo(rpParse(b.dataset.link)); return; }
-    const job = a === 'on' ? rpEnable() : a === 'off' ? rpDisable() : a === 'test' ? rpMessaging().then(() => rpReg.showNotification('🔔 Test des rappels', { body: 'Les rappels s\'afficheront comme ceci sur cet appareil.', tag: 'rappel-test', data: { url: 'plateforme.html#rappel=liste' } }))
+    const job = a === 'on' ? rpEnable() : a === 'off' ? rpDisable() : a === 'test' ? (window.rpV19 ? window.rpV19.test() : rpMessaging().then(() => rpReg.showNotification('🔔 Test des rappels', { body: 'Les rappels s\'afficheront comme ceci sur cet appareil.', tag: 'rappel-test', data: { url: 'plateforme.html#rappel=liste' } })))
       : a === 'vapid' ? rpRoot().set({ vapid: ($('rp-vapid') || {}).value ? $('rp-vapid').value.trim() : '' }, { merge: true }).then(() => { rpInfoAt = 0; if (typeof toast === 'function') toast('✓', 'Clé enregistrée pour toute l\'équipe'); }) : null;
     if (!job) return;
     rpBusy = true; rpErr = ''; rpRender();
@@ -11472,7 +11472,7 @@ function rpPanel() {
 }
 let rpT = null;
 function rpRenderSoon() { clearTimeout(rpT); rpT = setTimeout(rpRender, 50); }
-function rpRender() {
+function rpRender() { if (window.rpV19) return window.rpV19.render();   // V19 : panneau refait (état de chaque étape, vrai test) dans la couche « RAPPELS : ÉTAT DE CHAQUE ÉTAPE (V19) »
   const el = rpPanel(); if (!el) return;
   const page = $('ppage-settings');
   if (page && page.style.display === 'none') return;                // page cachée : rien à redessiner
@@ -11689,7 +11689,7 @@ document.addEventListener('DOMContentLoaded', start);
 
 // Pour les tests et le dépannage (console)
 window.fbSync = { state: () => state, msg: () => stateMsg, dirty: () => [...dirty], base: () => base, split, rebuild, extract, h53, KEYS, merge3,
-  rappels: { items: rpItems, upcoming: rpUpcoming, go: rpGo, fromUrl: rpFromUrl, local: rpLocal } };
+  rappels: { items: rpItems, upcoming: rpUpcoming, go: rpGo, fromUrl: rpFromUrl, local: rpLocal, core: { RP_STAGES, rpRoot, rpDev, rpSupported, rpMessaging, rpStartup, rpSaveDev, rpWhen, rpLink, rpPanel, rpRenderSoon, escH, cfg: FB_CONFIG, get state() { return state; }, get ready() { return ready; }, get user() { return user; }, get reg() { return rpReg; }, get busy() { return rpBusy; }, get err() { return rpErr; } } } };   // core : couche V19 (panneau Rappels)
 })();
 </script>
 <!-- ═══ PROJETS : ENREGISTREMENT AUTOMATIQUE ET FUSION (V7) ═══ -->
@@ -13279,6 +13279,259 @@ css.textContent = `
 document.head.appendChild(css);
 // Passage téléphone ↔ ordinateur (rotation, fenêtre) : le Planning affiché est redessiné avec la bonne largeur de colonne
 matchMedia('(max-width: 768px)').addEventListener('change', () => { const pp = document.getElementById('ppage-planning'); if (pp && pp.style.display === 'block' && typeof window.gtRender === 'function') window.gtRender(); });
+})();
+</script>
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+// RAPPELS : ÉTAT DE CHAQUE ÉTAPE ET VRAI TEST (V19)
+// Avant : le panneau 🔔 Rappels (Projets › Settings) disait « ✓ Activé » dès qu'on avait appuyé sur Activer, et
+// « Tester » affichait une notification locale sans passer par le serveur : rien ne montrait que le serveur des
+// rappels (fonctions Firebase du dossier functions/) n'était pas installé, donc qu'aucun rappel ne partirait.
+// Maintenant : ① serveur des rappels (répond-il ? dernier passage du matin), ② cet appareil (activé, autorisation
+// des notifications, inscription vue par le serveur, dernier envoi ou dernière erreur), ③ « Tester » : le serveur
+// (fonction rappelsTest) envoie une vraie notification par Firebase Cloud Messaging ; s'il ne répond pas,
+// notification locale et explication. Marche à suivre pour installer le serveur (commande Cloud Shell à copier).
+// Branché sur la couche Firebase par fbSync.rappels.core : rpRender, « Tester », rpEnable et rpStartup y renvoient.
+// ════════════════════════════════════════════════════════════════════════════
+(function () {
+const C = () => (window.fbSync && fbSync.rappels && fbSync.rappels.core) || null;
+const R = () => window.fbSync.rappels;
+const $ = id => document.getElementById(id);
+const BRANCH = 'ccr-fcfbd0a0-m1mkvy';   // branche publiée sur GitHub Pages : le serveur s'installe depuis la même
+const REGION = 'europe-west1';           // région des fonctions (functions/index.js)
+let srv = { st: '', at: 0 };             // réponse au « ping » : '' (pas encore), 'wait', 'ok', 'down'
+let info = { at: 0, loaded: false, devId: '', root: null, dev: null, env: null };   // documents lus (au plus 1 fois/min)
+let testRes = null;                      // dernier test : { ok } | { down } | { text }, avec l'heure
+let saveErr = '';                        // inscription de cet appareil refusée par Firestore
+let openSetup = null;                    // marche à suivre ouverte/fermée à la main (null : ouverte si serveur absent)
+
+const url = () => 'https://' + REGION + '-' + C().cfg.projectId + '.cloudfunctions.net/rappelsTest';
+const errStr = e => { const c = String((e && e.code) || ''), m = String((e && e.message) || e || ''); return ((c && !m.includes(c) ? c + ' : ' : '') + m).slice(0, 240); };
+const tsDate = v => v && typeof v.toDate === 'function' ? v.toDate() : (v && typeof v.seconds === 'number' ? new Date(v.seconds * 1000) : null);
+const fmtDT = d => d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) + ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+const cmd = () => 'npx -y firebase-tools@latest login --no-localhost && D=$(mktemp -d) && git clone -q --depth 1 -b ' + BRANCH + ' https://github.com/ytyoussef123/Work.git "$D" && cd "$D" && npm --prefix functions install --no-audit --no-fund && npx -y firebase-tools@latest deploy --only functions --project ' + C().cfg.projectId;   // connexion (sautée si déjà faite), dossier neuf à chaque fois
+const nw = s => s.replace(/(^|\s)([^\s<>]*-[^\s<>]*)/g, (m, a, t) => t.length <= 26 ? a + '<span class="rp19-nw">' + t + '</span>' : m);   // mots à tiret (--depth, firebase-tools…) jamais coupés à l'écran
+
+// Fonction « callable » rappelsTest : POST { data } avec le jeton de la connexion Google ; réponse { result }
+async function call(data) {
+  const c = C(); let tok = '';
+  try { if (c.user && typeof c.user.getIdToken === 'function') tok = await c.user.getIdToken(); } catch (e) {}
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const t = setTimeout(() => { if (ctl) ctl.abort(); }, 25000);   // premier appel : la fonction démarre (quelques secondes)
+  try {
+    const r = await fetch(url(), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tok ? { Authorization: 'Bearer ' + tok } : {}),
+      body: JSON.stringify({ data: data || {} }), signal: ctl ? ctl.signal : undefined });
+    let j = null; try { j = await r.json(); } catch (e) {}
+    if (j && j.result && typeof j.result === 'object') return j.result;
+    if (j && j.error) return { ok: false, code: String(j.error.status || 'error').toLowerCase(), message: String(j.error.message || '') };
+    return { ok: false, down: true, code: 'http ' + r.status };
+  } catch (e) { return { ok: false, down: true, code: 'réseau' }; }
+  finally { clearTimeout(t); }
+}
+function ping(force) {   // le serveur est-il installé ? (au plus toutes les 5 min, ou à la demande ↻)
+  const c = C();
+  if (!c || !c.ready || srv.st === 'wait' || navigator.onLine === false) return;
+  if (!force && srv.at && Date.now() - srv.at < 300000) return;
+  srv = { st: 'wait', at: Date.now() };
+  call({ ping: true }).then(r => { srv = { st: r && r.ok ? 'ok' : 'down', at: Date.now() }; c.rpRenderSoon(); });
+}
+function refresh(force) {   // app/_rappels (dernier passage), app/_rappels/appareils/<id> et envois/<id> (dernier envoi, erreur)
+  const c = C();
+  if (!c || !c.ready || (!force && Date.now() - info.at < 60000)) return;
+  info.at = Date.now();
+  const id = R().local().id, root = c.rpRoot();
+  const read = (ref, none) => ref.get().then(r => r.exists ? (r.data() || {}) : none, () => null);   // null : illisible (pas « absent »)
+  Promise.all([read(root, {}), id ? read(c.rpDev(id), false) : false, id ? read(root.collection('envois').doc(id), {}) : {}])
+    .then(([rootD, devD, envD]) => { Object.assign(info, { loaded: true, devId: id, root: rootD, dev: devD, env: envD }); c.rpRenderSoon(); });
+}
+function saveFailed(e) { saveErr = errStr(e); const c = C(); if (c) c.rpRenderSoon(); }
+function saved(p) {   // Activer : attendre l'accord de Firestore (8 s au plus ; hors ligne, l'inscription partira au retour du réseau)
+  saveErr = '';
+  const ok = p.then(() => { saveErr = ''; info.at = 0; }, saveFailed);
+  return Promise.race([ok, new Promise(r => setTimeout(r, 8000))]);
+}
+async function test() {   // bouton « Tester »
+  const c = C(), L = R().local(), now = () => new Date();
+  testRes = null;
+  if (!L.on || !L.id) { testRes = { text: 'appuyez d\'abord sur « Activer sur cet appareil »', at: now() }; return; }
+  if (Notification.permission !== 'granted') { testRes = { text: 'les notifications ne sont pas autorisées sur cet appareil : appuyez sur « Réactiver »', at: now() }; return; }
+  await c.rpMessaging();                      // service worker + Firebase Messaging
+  await c.rpStartup();                        // jeton de notification à jour (il peut changer)
+  await saved(c.rpSaveDev(R().local()));      // inscription vue par le serveur avant son envoi
+  const r = await call({ id: L.id });
+  if (r.ok) { srv = { st: 'ok', at: Date.now() }; testRes = { ok: true, at: now() }; }
+  else if (r.down) {
+    srv = { st: 'down', at: Date.now() };
+    await c.reg.showNotification('🔔 Test des rappels', { body: 'Affichée par cet appareil seulement : le serveur des rappels ne répond pas.', tag: 'rappel-test', data: { url: 'plateforme.html#rappel=liste' } });
+    testRes = { down: true, at: now() };
+  } else {
+    srv = { st: 'ok', at: Date.now() };
+    testRes = { text: r.code === 'unauthenticated' && !/☁/.test(r.message || '') ? 'le serveur ne reconnaît pas votre connexion Google : reconnectez-vous avec ☁, puis réessayez' : (r.message || r.code), at: now() };
+  }
+  info.at = 0;   // relire l'état (date du test, inscription, erreur)
+}
+function explain(m) {   // erreurs de l'activation, en clair
+  if (/permission-blocked/i.test(m)) return 'notifications bloquées pour ce site : 🔒 à gauche de l\'adresse › Autorisations › Notifications › Autoriser';
+  if (/token-subscribe-failed|fcmregistrations|API key|PERMISSION_DENIED|applicationServerKey|vapid/i.test(m)) return 'Firebase refuse d\'inscrire cet appareil (' + m + '). Si une clé Web Push a été enregistrée plus bas, elle est peut-être fausse : videz-la, enregistrez, puis réactivez.';
+  if (/service.?worker|sw\.js/i.test(m)) return 'le service des notifications (sw.js) n\'a pas pu s\'installer : rechargez la page puis réessayez (' + m + ')';
+  return m;
+}
+function copyCmd(b) {
+  const done = () => { if (typeof toast === 'function') toast('📋', 'Commande copiée : collez-la dans Cloud Shell'); b.textContent = '✓ Copiée'; setTimeout(() => { b.textContent = '📋 Copier la commande'; }, 2500); };
+  const fallback = () => { try { const r = document.createRange(); r.selectNodeContents(document.querySelector('#rp-panel .rp19-cmd')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); if (document.execCommand('copy')) done(); } catch (e) {} };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(cmd()).then(done, fallback); else fallback();
+}
+function wire(el) {
+  if (el.__rp19) return; el.__rp19 = true;
+  el.addEventListener('click', ev => {
+    const b = ev.target.closest('[data-rp19]');
+    if (b) { if (b.dataset.rp19 === 'copy') copyCmd(b); else if (b.dataset.rp19 === 'srv') { ping(true); refresh(true); render(); } return; }
+    const sm = ev.target.closest('details[data-k="setup"] > summary');
+    if (sm) openSetup = !sm.parentNode.open;                             // état après ce clic : gardé aux prochains dessins
+    if (ev.target.closest('[data-rap="vapid"]')) setTimeout(() => refresh(true), 800);   // clé Web Push enregistrée : relire
+  });
+}
+
+function render() {
+  const c = C(); if (!c) return;
+  const el = c.rpPanel(); if (!el) return;
+  wire(el);
+  const page = $('ppage-settings');
+  if (page && page.style.display === 'none') return;                    // page cachée : rien à redessiner
+  const vIn = $('rp-vapid');
+  if (vIn && document.activeElement === vIn) return;                     // clé en cours de saisie : ne pas l'effacer
+  const typed = vIn ? vIn.value : null, vd = el.querySelector('details[data-k="vapid"]'), vOpen = !!(vd && vd.open);
+  const e = c.escH, L = R().local(), on = !!(c.ready && c.user), sup = c.state !== 'file' && c.rpSupported();
+  if (on) { refresh(); ping(); }
+  const step = (cls, n, title, body, act) => '<div class="rp19-step ' + cls + '"><span class="rp19-ic">' + ({ ok: '✓', ko: '✕', warn: '!', wait: '…' }[cls] || n) + '</span>' +
+    '<div class="rp19-tx"><b class="rp19-t">' + title + '</b>' + body + '</div>' + (act ? '<div class="rp19-act">' + act + '</div>' : '') + '</div>';
+
+  // ① Serveur des rappels
+  const last = tsDate(info.root && info.root.dernierPassage), lastTxt = last ? 'dernier passage le ' + fmtDT(last) : '';
+  const fresh = !!last && Date.now() - last.getTime() < 30 * 3600000;
+  let s1c = 'wait', s1, autoOpen = false;
+  if (!on) { s1c = ''; s1 = 'Connectez-vous avec ☁ pour voir son état.'; }
+  else if (navigator.onLine === false) s1 = 'Hors ligne' + (last ? ' · ' + lastTxt : '') + '.';
+  else if (srv.st === 'ok') {
+    if (fresh) { s1c = 'ok'; s1 = 'En service · ' + lastTxt + '.'; }
+    else if (last) { s1c = 'warn'; s1 = 'Installé, mais pas passé depuis le ' + fmtDT(last) + ' (il passe chaque matin vers 8 h) : voir Firebase › Functions › rappelsQuotidiens › Journaux.'; }
+    else { s1c = 'ok'; s1 = 'Installé · premier passage le prochain matin, vers 8 h.'; }
+  } else if (srv.st === 'down') {
+    if (last) { s1c = 'warn'; s1 = 'Passage du matin en place (' + lastTxt + '), mais serveur pas à jour : le test ne peut pas passer par lui. Mettez-le à jour avec la marche à suivre ci-dessous.'; }
+    else { s1c = 'ko'; s1 = '<b>Ne répond pas : il n\'est pas encore installé.</b> Sans lui, aucun rappel ne part. À faire une fois, sur un ordinateur : « Installer le serveur des rappels » ci-dessous.'; autoOpen = true; }
+  } else s1 = 'Vérification…' + (last ? ' · ' + lastTxt : '');
+
+  // ② Cet appareil
+  let s2c = 'ko', s2, act2 = '', sub2 = '';
+  if (c.state === 'file') s2 = 'Indisponible : l\'app est ouverte comme fichier. Ouvrez-la depuis son adresse en ligne.';
+  else if (!c.rpSupported()) s2 = 'Ce navigateur ne gère pas les notifications (iPhone : ajouter d\'abord l\'app à l\'écran d\'accueil).';
+  else if (!on) s2 = 'Connectez-vous avec ☁ pour activer les rappels sur cet appareil.';
+  else if (!L.on) { s2c = ''; s2 = 'Pas activé sur cet appareil.'; act2 = '<button class="btn bp btn-sm" data-rap="on">🔔 Activer sur cet appareil</button>'; }
+  else {
+    const perm = window.Notification ? Notification.permission : 'denied';
+    const missing = info.loaded && info.devId === L.id && info.dev === false;
+    let again = true;
+    if (perm === 'denied') s2 = 'Activé sur cet appareil, mais les notifications sont <b>bloquées</b> : 🔒 à gauche de l\'adresse › Autorisations › Notifications › Autoriser (app installée : Réglages du téléphone › Applications › Notifications).';
+    else if (perm !== 'granted') s2 = 'Activé sur cet appareil, mais l\'autorisation des notifications n\'est plus donnée : appuyez sur « Réactiver ».';
+    else if (saveErr) s2 = 'Activé sur cet appareil, mais Firebase a refusé l\'inscription (' + e(saveErr) + ') : votre compte a-t-il accès à la base ?';
+    else if (missing) s2 = 'Activé sur cet appareil, mais <b>pas inscrit côté serveur</b> (jeton expiré ou effacé) : appuyez sur « Réactiver ».';
+    else { s2c = 'ok'; again = false; s2 = '<b>✓ Activé sur cet appareil</b> · notifications autorisées' + (info.loaded && info.devId === L.id && info.dev ? ' · inscrit côté serveur' : '') + '.'; }
+    act2 = (again ? '<button class="btn bp btn-sm" data-rap="on">↻ Réactiver</button>' : '') + '<button class="btn bs btn-sm" data-rap="off">Désactiver</button>';
+    const env = info.devId === L.id && info.env;
+    if (env && env.derniereErreur) { const d = tsDate(env.erreurLe); sub2 += '<span class="rp19-sub rp19-bad">⚠ Dernier envoi refusé par Firebase' + (d ? ' le ' + fmtDT(d) : '') + ' : ' + e(env.derniereErreur) + '</span>'; }
+    const de = env && tsDate(env.dernierEnvoi), dt = env && tsDate(env.dernierTest);
+    if (de) sub2 += '<span class="rp19-sub">Dernier rappel envoyé le ' + fmtDT(de) + '.</span>';
+    if (dt) sub2 += '<span class="rp19-sub">Dernier test envoyé par le serveur le ' + fmtDT(dt) + '.</span>';
+  }
+
+  // ③ Test
+  let s3 = '';
+  if (on && sup && L.on) {
+    const t = testRes, hh = t ? t.at.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+    const body = !t ? 'Le serveur envoie tout de suite une vraie notification à cet appareil, par le même chemin que les rappels du matin.'
+      : t.ok ? '<b>✓ Envoyée par le serveur à ' + hh + '</b> : elle doit s\'afficher dans les secondes qui viennent. Rien ? Vérifiez que Chrome (ou l\'app installée) a le droit d\'afficher des notifications dans les réglages du téléphone, et que « Ne pas déranger » est coupé.'
+      : t.down ? '<b>Notification affichée par cet appareil seulement</b> (' + hh + ') : le serveur des rappels ne répond pas. Il doit d\'abord être installé (étape 1).'
+      : '<b>✕ ' + e(t.text) + '</b> (' + hh + ')';
+    s3 = step(t ? (t.ok ? 'ok' : t.down ? 'warn' : 'ko') : '', '3', 'Test', '<span>' + body + '</span>', '<button class="btn bs btn-sm" data-rap="test">Tester</button>');
+  }
+
+  const setupOpen = openSetup !== null ? openSetup : autoOpen;
+  const setup = !on ? '' : '<details data-k="setup" class="rp19-setup' + (autoOpen ? ' hot' : '') + '"' + (setupOpen ? ' open' : '') + '><summary>Installer ou mettre à jour le serveur des rappels (une fois, sur un ordinateur)</summary><ol>' +
+    '<li>Sur un ordinateur, ouvrez <a href="https://shell.cloud.google.com/?show=terminal" target="_blank" rel="noopener">Google Cloud Shell ↗</a> avec le compte Google propriétaire du projet Firebase (un terminal dans le navigateur, gratuit).</li>' +
+    '<li>Collez cette commande, puis appuyez sur Entrée :<code class="rp19-cmd">' + nw(e(cmd())) + '</code><button class="btn bs btn-sm" data-rp19="copy">📋 Copier la commande</button></li>' +
+    '<li>Elle demande d\'abord de vous connecter : ouvrez le lien affiché, choisissez ce même compte Google, autorisez, puis copiez le code obtenu et collez-le dans Cloud Shell (s\'il répond « Already logged in », rien à faire). Si une question s\'affiche, appuyez simplement sur Entrée.</li>' +
+    '<li>L\'installation prend 3 à 5 minutes. Si le message dit « Retry the deployment in a few minutes », attendez 2 minutes et recollez la même commande.</li>' +
+    '<li>Quand « Deploy complete! » s\'affiche, revenez ici et touchez « ↻ vérifier » : l\'étape 1 passe au vert. Appuyez alors sur « Tester ».</li></ol>' +
+    '<div class="rp19-note">Le forfait Blaze de Firebase est nécessaire (le coût reste pratiquement nul : un passage par jour). La même commande sert pour les mises à jour.</div></details>';
+
+  const prefs = c.RP_STAGES.map(([k, t]) => '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 14px 6px 0;font-size:12.5px;cursor:pointer"><input type="checkbox" data-rap-pref="' + k + '"' + (L.prefs[k] ? ' checked' : '') + '>' + t + '</label>').join('') +
+    '<div style="margin-top:2px"><label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-rap-pref="actions"' + (L.prefs.actions ? ' checked' : '') + '>Aussi les actions datées (plan d\'actions, notes des outils)</label></div>';
+  const up = R().upcoming(L.prefs);
+  const list = up.length ? up.slice(0, 8).map(x => '<div data-rap="go" data-link="' + e(c.rpLink(x.link)) + '" style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--border);cursor:pointer">' +
+      '<span style="flex-shrink:0;min-width:92px;font-size:11.5px;font-weight:600;color:' + (x.d < 0 ? 'var(--danger)' : x.d <= 3 ? 'var(--warn)' : 'var(--accent2)') + '">' + e(c.rpWhen(x.d)) + '</span>' +
+      '<span style="min-width:0;font-size:12.5px">' + (x.kind === 'jalon' ? '◆ ' : '☐ ') + e(x.label) + '<span style="display:block;font-size:11px;color:var(--muted)">' + e(x.where) + '</span></span></div>').join('') +
+      (up.length > 8 ? '<div style="font-size:11px;color:var(--muted);padding-top:6px">… et ' + (up.length - 8) + ' autre(s)</div>' : '')
+    : '<div style="font-size:12px;color:var(--muted)">Rien dans les 7 prochains jours.</div>';
+  const H = t => '<div class="rp19-h">' + t + '</div>';
+  const nbsp = s => s.replace(/« /g, '«\u00a0').replace(/ ([»?!:;])/g, '\u00a0$1');   // ponctuation française : jamais seule en début ou fin de ligne
+
+  el.innerHTML = nbsp('<div class="ph"><div class="pt"><div class="dot" style="background:var(--accent2)"></div>🔔 Rappels (notifications)</div></div>' +
+    '<div class="pb rp19">' +
+    '<div class="rp19-intro">Une notification sur cet appareil quand un jalon d\'outil ou une action datée arrive à échéance, même l\'application fermée. Envoyée chaque matin (vers 8 h) par le serveur des rappels. Il faut les 3 étapes ci-dessous au vert.</div>' +
+    '<div class="rp19-steps">' +
+      step(s1c, '1', 'Serveur des rappels' + (on ? '<button class="rp19-re" data-rp19="srv" title="Vérifier de nouveau">↻ vérifier</button>' : ''), '<span>' + s1 + '</span>', '') +
+      step(s2c, '2', 'Cet appareil', '<span>' + s2 + '</span>' + sub2, act2) + s3 +
+    '</div>' +
+    (c.busy ? '<div class="rp19-busy">⏳ …</div>' : '') +
+    (c.err ? '<div class="rp19-err">⚠ ' + e(explain(c.err)) + '</div>' : '') +
+    setup +
+    '<div>' + H('Quand') + prefs + '</div>' +
+    '<div>' + H('À venir (7 jours)') + list + '</div>' +
+    (c.ready ? '<details data-k="vapid" style="font-size:12px"' + (vOpen ? ' open' : '') + '><summary style="cursor:pointer;color:var(--muted)">Réglage (une fois pour l\'équipe) : clé Web Push</summary>' +
+      '<div style="margin-top:8px;color:var(--muted);line-height:1.5">Seulement si « Activer » affiche une erreur. Firebase › Paramètres du projet › Cloud Messaging › Configuration Web › Certificats Web Push : copier la « paire de clés » (clé publique).</div>' +
+      '<div style="display:flex;gap:6px;margin-top:6px"><input id="rp-vapid" type="text" placeholder="Clé publique (commence souvent par B…)" value="' + e((info.root && info.root.vapid) || '') + '" style="flex:1;min-width:0"><button class="btn bs btn-sm" data-rap="vapid">Enregistrer</button></div></details>' : '') +
+    '</div>');
+  const v2 = $('rp-vapid');                                               // garder la clé déjà collée
+  if (v2 && typed && typed !== v2.value && !c.busy) v2.value = typed;
+}
+
+const css = document.createElement('style');
+css.textContent = `
+#rp-panel .rp19{display:flex;flex-direction:column;gap:12px}
+#rp-panel .rp19-intro{font-size:12px;color:var(--muted);line-height:1.5}
+#rp-panel .rp19-steps{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface2)}
+#rp-panel .rp19-step{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-top:1px solid var(--border)}
+#rp-panel .rp19-step:first-child{border-top:none}
+#rp-panel .rp19-ic{flex:0 0 22px;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:800;line-height:1;color:var(--text);background:var(--surface3);border:1px solid var(--border);margin-top:1px}
+#rp-panel .rp19-step.ok .rp19-ic{background:var(--accent);border-color:var(--accent);color:#000}
+#rp-panel .rp19-step.ko .rp19-ic{background:var(--danger);border-color:var(--danger);color:#fff}
+#rp-panel .rp19-step.warn .rp19-ic{background:var(--warn);border-color:var(--warn);color:#000}
+#rp-panel .rp19-step.ko{background:rgba(255,77,106,.06)}
+#rp-panel .rp19-tx{flex:1 1 auto;min-width:0;font-size:12.5px;line-height:1.5;overflow-wrap:anywhere}
+#rp-panel .rp19-t{display:block;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:1px}
+#rp-panel .rp19-re{margin-left:8px;padding:1px 8px;border-radius:10px;border:1px solid var(--border);background:var(--surface3);color:var(--text);font:600 10.5px 'DM Sans',sans-serif;text-transform:none;letter-spacing:0;cursor:pointer;vertical-align:1px}
+#rp-panel .rp19-sub{display:block;font-size:11.5px;color:var(--muted);margin-top:3px}
+#rp-panel .rp19-sub.rp19-bad{color:var(--danger)}
+#rp-panel .rp19-act{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;flex-shrink:0;max-width:50%}
+#rp-panel .rp19-busy{font-size:12px;color:var(--accent2)}
+#rp-panel .rp19-err{font-size:12px;color:var(--danger);line-height:1.45;overflow-wrap:anywhere}
+#rp-panel .rp19-h{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+#rp-panel .rp19-setup{font-size:12.5px;border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+#rp-panel .rp19-setup.hot{border-color:var(--danger)}
+#rp-panel .rp19-setup summary{cursor:pointer;font-weight:600;color:var(--text)}
+#rp-panel .rp19-setup ol{margin:10px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:9px;line-height:1.5}
+#rp-panel .rp19-setup a{color:var(--accent2);font-weight:600}
+#rp-panel .rp19-setup code{font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+#rp-panel .rp19-cmd{display:block;margin:6px 0;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere;user-select:all;-webkit-user-select:all}
+#rp-panel .rp19-note{margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.45}
+#rp-panel .rp19-nw{white-space:nowrap}
+@media (max-width:768px){
+  #rp-panel .rp19-step{flex-wrap:wrap}
+  #rp-panel .rp19-tx{flex-basis:calc(100% - 32px)}
+  #rp-panel .rp19-act{max-width:none;flex-basis:100%;justify-content:flex-start;padding-left:32px}
+}`;
+document.head.appendChild(css);
+window.rpV19 = { render, test, saved, saveFailed };
 })();
 </script>
 </body>

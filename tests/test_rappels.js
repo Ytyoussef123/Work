@@ -122,7 +122,7 @@ function fakeDb(init) {
   check('appareil 1 (7 jours) : 5 échéances groupées', (sends.find(s => s.token === 'TOK1') || {}).data.title === '5 échéances à suivre', sends.find(s => s.token === 'TOK1'));
   check('appareil 2 (le jour même) : l\'action du jour seule', (sends.find(s => s.token === 'TOK2') || {}).data.title === 'Action aujourd\'hui (12/11)', sends.find(s => s.token === 'TOK2'));
   check('appareil désinscrit (jeton mort) : retiré', !db.store.has('app/_rappels/appareils/dev3') && r1.retires === 1, r1);
-  check('compte rendu dans app/_rappels, clé Web Push conservée', JSON.stringify(db.store.get('app/_rappels')) === JSON.stringify({ vapid: 'BCLE', dernierPassage: 'TS', appareils: 4, envoyes: 2, retires: 1 }), db.store.get('app/_rappels'));
+  check('compte rendu dans app/_rappels, clé Web Push conservée', JSON.stringify(db.store.get('app/_rappels')) === JSON.stringify({ vapid: 'BCLE', dernierPassage: 'TS', appareils: 4, envoyes: 2, retires: 1, erreurs: 0 }), db.store.get('app/_rappels'));
   check('journal des envois par appareil', Object.keys((db.store.get('app/_rappels/envois/dev1') || {}).cles || {}).length === 5);
   sends.length = 0;
   await R.run({ db, send, ts: 'TS2', now: new Date(TODAY + 'T15:00:00Z') });
@@ -160,6 +160,82 @@ function fakeDb(init) {
   ev = await click();
   check('clic, app déjà ouverte : elle reçoit le lien et passe au premier plan', opened.length === 1 && posted[0].rappel === 'https://ytyoussef123.github.io/Work/plateforme.html#rappel=p/Pp1/t/T1' && posted[1] === 'focus', posted);
   check('pas d\'interception des pages (aucun « fetch »)', !listeners.fetch);
+
+  console.log('7. V19 : résultat d\'envoi par appareil, bouton « Tester » (fonction rappelsTest)');
+  const init7 = {};
+  for (const id in docs) init7['app/pm_db/r/' + id] = docs[id];
+  init7['app/_rappels/appareils/devA'] = { token: 'TOKA', email: 'A@Test.fr', tz: 'Europe/Paris', prefs: R.DEFAULT_PREFS };
+  init7['app/_rappels/appareils/devE'] = { token: 'ERR', email: 'e@test.fr', tz: 'Europe/Paris', prefs: R.DEFAULT_PREFS };
+  init7['app/_rappels/appareils/devM'] = { token: 'MORT', email: 'm@test.fr', tz: 'Europe/Paris', prefs: R.DEFAULT_PREFS };
+  init7['app/_rappels/envois/devA'] = { cles: { 'm:OLD|2026-01-02|j7': '2026-01-02' }, dernierTest: 'T0' };
+  const db7 = fakeDb(init7), sends7 = [];
+  const send7 = async (token, data, ttl) => {
+    if (token === 'MORT') { const e = new Error('gone'); e.code = 'messaging/registration-token-not-registered'; throw e; }
+    if (token === 'ERR') { const e = new Error('Auth error from APNS or Web Push Service'); e.code = 'messaging/third-party-auth-error'; throw e; }
+    sends7.push({ token, data, ttl });
+  };
+  const r7 = await R.run({ db: db7, send: send7, ts: 'TS7', now: new Date(TODAY + 'T07:00:00Z') });
+  const eA = db7.store.get('app/_rappels/envois/devA') || {}, eE = db7.store.get('app/_rappels/envois/devE') || {};
+  check('envoi réussi : « dernierEnvoi » noté, test précédent conservé, vieux envois oubliés', eA.dernierEnvoi === 'TS7' && eA.derniereErreur === '' && eA.dernierTest === 'T0' && !eA.cles['m:OLD|2026-01-02|j7'] && Object.keys(eA.cles).length === 5, eA);
+  check('envoi refusé par Firebase : erreur notée pour l\'appareil (code + texte), pas d\'envoi marqué', /third-party-auth-error : Auth error/.test(eE.derniereErreur || '') && eE.erreurLe === 'TS7' && !eE.cles, eE);
+  check('compte rendu : erreurs comptées', r7.erreurs === 1 && r7.retires === 1 && (db7.store.get('app/_rappels') || {}).erreurs === 1, r7);
+  const A7 = { uid: 'u1', token: { email: 'a@test.fr' } };
+  let t7 = await R.test({ db: db7, send: send7, data: { ping: true } });
+  check('ping (sans connexion) : « serveur installé »', t7.ok === true && t7.ping === true && t7.v === 19, t7);
+  t7 = await R.test({ db: db7, send: send7, auth: null, data: { id: 'devA' } });
+  check('test sans connexion : refusé', t7.ok === false && t7.code === 'unauthenticated', t7);
+  t7 = await R.test({ db: db7, send: send7, auth: A7, data: { id: '../x' } });
+  check('identifiant d\'appareil invalide : refusé', t7.code === 'invalid-argument', t7);
+  t7 = await R.test({ db: db7, send: send7, auth: A7, data: { id: 'devInconnu' } });
+  check('appareil pas inscrit côté serveur : « Réactiver »', t7.code === 'not-found' && /Réactiver/.test(t7.message), t7);
+  t7 = await R.test({ db: db7, send: send7, auth: { uid: 'u2', token: { email: 'autre@test.fr' } }, data: { id: 'devA' } });
+  check('appareil d\'un autre compte : refusé, rien envoyé', t7.code === 'permission-denied' && !sends7.some(s => s.data === R.TEST_MSG), t7);
+  sends7.length = 0;
+  t7 = await R.test({ db: db7, send: send7, auth: A7, data: { id: 'devA' }, ts: 'TS8' });
+  check('test : vraie notification envoyée à cet appareil (validité 10 min), date du test notée', t7.ok === true && sends7.length === 1 && sends7[0].token === 'TOKA' && sends7[0].data.title === '🔔 Test des rappels' && sends7[0].ttl === '600' && db7.store.get('app/_rappels/envois/devA').dernierTest === 'TS8' && db7.store.get('app/_rappels/envois/devA').dernierEnvoi === 'TS7', [t7, sends7]);
+  check('message du test : que du texte (exigé par FCM)', Object.values(R.TEST_MSG).every(v => typeof v === 'string'));
+  db7.store.set('app/_rappels/appareils/devM', { token: 'MORT', email: 'a@test.fr' });
+  t7 = await R.test({ db: db7, send: send7, auth: A7, data: { id: 'devM' } });
+  check('jeton expiré : appareil oublié, « Réactiver »', t7.code === 'token' && /Réactiver/.test(t7.message) && !db7.store.has('app/_rappels/appareils/devM'), t7);
+  db7.store.set('app/_rappels/appareils/devE', { token: 'ERR', email: 'a@test.fr' });
+  t7 = await R.test({ db: db7, send: send7, auth: A7, data: { id: 'devE' }, ts: 'TS9' });
+  check('autre refus de Firebase : message avec le code, erreur notée', t7.code === 'fcm' && /third-party-auth-error/.test(t7.message) && db7.store.get('app/_rappels/envois/devE').erreurLe === 'TS9', t7);
+
+  // La vraie fonction « callable » (index.js) derrière un serveur HTTP local : même protocole que l'app
+  // (POST { data }, jeton Google en « Authorization: Bearer », réponse { result }) ; Firestore et FCM remplacés
+  // par les faux ; jeton non vérifié (mode test de firebase-functions), CORS pour l'adresse GitHub Pages.
+  process.env.FIREBASE_DEBUG_MODE = 'true';
+  process.env.FIREBASE_DEBUG_FEATURES = JSON.stringify({ skipTokenVerification: true });
+  process.env.GCLOUD_PROJECT = process.env.GCLOUD_PROJECT || 'demo-test';
+  const FN = path.join(__dirname, '..', 'functions');
+  const fcm = [];
+  const stub = (mod, exp) => { const f = require.resolve(mod, { paths: [FN] }); require.cache[f] = { id: f, filename: f, loaded: true, exports: exp }; };
+  stub('firebase-admin/firestore', { getFirestore: () => db7, FieldValue: { serverTimestamp: () => 'TSH' } });
+  stub('firebase-admin/messaging', { getMessaging: () => ({ send: async m => { fcm.push(m); return 'projects/x/messages/1'; } }) });
+  const fns = require(path.join(FN, 'index.js'));
+  check('index.js : rappelsTest « callable » en europe-west1 (2e génération), rappelsQuotidiens toujours planifiée à 07:00 UTC',
+    !!(fns.rappelsTest.__endpoint || {}).callableTrigger && fns.rappelsTest.__endpoint.region[0] === 'europe-west1' && fns.rappelsTest.__endpoint.platform === 'gcfv2' &&
+    ((fns.rappelsQuotidiens.__endpoint || {}).scheduleTrigger || {}).schedule === '0 7 * * *', fns.rappelsTest.__endpoint);
+  const express = require(path.join(FN, 'node_modules', 'express'));
+  const app = express(); app.use(express.json()); app.use((req, res) => fns.rappelsTest(req, res));
+  const srv = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+  const URL0 = 'http://127.0.0.1:' + srv.address().port + '/', ORIGIN = 'https://ytyoussef123.github.io';
+  const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const idTok = b64({ alg: 'RS256', typ: 'JWT' }) + '.' + b64({ sub: 'u1', user_id: 'u1', email: 'a@test.fr' }) + '.c2ln';
+  const call = (data, tok) => fetch(URL0, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json', Origin: ORIGIN }, tok ? { Authorization: 'Bearer ' + tok } : {}), body: JSON.stringify({ data }) });
+  try {
+    const pre = await fetch(URL0, { method: 'OPTIONS', headers: { Origin: ORIGIN, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization,content-type' } });
+    const ah = (pre.headers.get('access-control-allow-headers') || '').toLowerCase();
+    check('CORS : l\'app (GitHub Pages) peut appeler la fonction avec son jeton', pre.status === 204 && [ORIGIN, '*'].includes(pre.headers.get('access-control-allow-origin')) && ah.includes('authorization') && ah.includes('content-type'), [pre.status, pre.headers.get('access-control-allow-origin'), ah]);
+    let res = await call({ ping: true });
+    let body = await res.json();
+    check('HTTP : ping sans jeton → { result: { ok, ping } }', res.status === 200 && body.result && body.result.ok === true && body.result.ping === true && !!res.headers.get('access-control-allow-origin'), [res.status, body]);
+    res = await call({ id: 'devA' }, idTok); body = await res.json();
+    const m0 = fcm[fcm.length - 1] || {};
+    check('HTTP : test avec le jeton Google → notification FCM à cet appareil (message « data », urgent, 10 min)', res.status === 200 && body.result && body.result.ok === true && m0.token === 'TOKA' && m0.data && m0.data.title === '🔔 Test des rappels' && m0.webpush.headers.Urgency === 'high' && m0.webpush.headers.TTL === '600', [res.status, body, m0]);
+    res = await call({ id: 'devA' }); body = await res.json();
+    check('HTTP : test sans jeton → refus lisible par le panneau', res.status === 200 && body.result && body.result.code === 'unauthenticated', [res.status, body]);
+  } finally { srv.close(); }
 
   console.log(`\n${pass} réussis, ${fail} échoués`);
   process.exit(fail ? 1 : 0);

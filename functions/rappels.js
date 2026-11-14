@@ -1,6 +1,6 @@
 'use strict';
 // Rappels des échéances de Project Master (jalons d'outils, actions datées) — logique sans Firebase,
-// utilisée par la fonction planifiée (index.js) et testée par tests/test_rappels.js.
+// utilisée par les fonctions de index.js (passage du matin, test du panneau) et testée par tests/test_rappels.js.
 // Mêmes règles que le panneau « Rappels » de plateforme.html (couche Firebase, section RAPPELS) :
 // garder les deux d'accord.
 
@@ -111,37 +111,80 @@ function prune(sent, today) {   // oublie les envois de plus de 90 jours
   return out;
 }
 
-// Un passage (chaque matin). db : Firestore (admin) ; send(token, data) : envoi FCM ; ts : horodatage serveur
+// Erreurs d'envoi FCM. Jeton mort = appareil désinscrit (app désinstallée, données du site effacées…) : on l'oublie.
+const errCode = e => String((e && (e.code || (e.errorInfo && e.errorInfo.code))) || '');
+const errText = e => { const c = errCode(e), m = String((e && e.message) || e || ''); return (c && !m.includes(c) ? c + ' : ' : '') + m.slice(0, 300); };
+const isDead = c => /registration-token-not-registered|invalid-registration-token/.test(c);
+
+// Un passage (chaque matin). db : Firestore (admin) ; send(token, data) : envoi FCM ; ts : horodatage serveur.
+// Pour le panneau (V19) : app/_rappels/envois/<appareil> garde aussi { dernierEnvoi } ou { derniereErreur, erreurLe }.
 async function run({ db, send, ts, now }) {
   const root = db.collection('app').doc('_rappels');
   const pmSnap = await db.collection('app').doc('pm_db').collection('r').get();
   const docs = {}; pmSnap.forEach(d => { docs[d.id] = d.data(); });
   const items = collectItems(pmFromRecords(reassemble(docs)));
   const devs = await root.collection('appareils').get();
-  let envoyes = 0, retires = 0;
+  let envoyes = 0, retires = 0, erreurs = 0;
   for (const dev of devs.docs) {
     const a = dev.data() || {};
     if (!a.token) continue;
     const sentRef = root.collection('envois').doc(dev.id);
     const sDoc = await sentRef.get();
-    const sent = (sDoc.exists && (sDoc.data() || {}).cles) || {};
+    const prev = (sDoc.exists && sDoc.data()) || {};
+    const sent = prev.cles || {};
     const today = todayIn(a.tz, now);
     const due = dueFor(items, a.prefs, today, sent);
     if (!due.length) continue;
     try {
       await send(a.token, message(due));
       due.forEach(x => { sent[x.sentKey] = today; });
-      await sentRef.set({ cles: prune(sent, today) });
+      await sentRef.set(Object.assign({}, prev, { cles: prune(sent, today), dernierEnvoi: ts, derniereErreur: '' }));   // cles remplacé en entier
       envoyes++;
     } catch (e) {
-      const c = (e && (e.code || (e.errorInfo && e.errorInfo.code))) || '';
-      if (/registration-token-not-registered|invalid-registration-token/.test(c)) {   // appareil désinscrit : on l'oublie
+      const c = errCode(e);
+      if (isDead(c)) {   // appareil désinscrit : on l'oublie
         await dev.ref.delete(); await sentRef.delete().catch(() => {}); retires++;
-      } else console.error('rappel non envoyé', dev.id, c || e);
+      } else {
+        console.error('rappel non envoyé', dev.id, c || e); erreurs++;
+        await sentRef.set({ derniereErreur: errText(e), erreurLe: ts }, { merge: true }).catch(() => {});
+      }
     }
   }
-  await root.set({ dernierPassage: ts, appareils: devs.size, envoyes, retires }, { merge: true });
-  return { echeances: items.length, appareils: devs.size, envoyes, retires };
+  await root.set({ dernierPassage: ts, appareils: devs.size, envoyes, retires, erreurs }, { merge: true });
+  return { echeances: items.length, appareils: devs.size, envoyes, retires, erreurs };
 }
 
-module.exports = { DEFAULT_PREFS, reassemble, pmFromRecords, collectItems, todayIn, days, dueFor, message, prune, run };
+// Bouton « Tester » du panneau Rappels (V19), via la fonction rappelsTest : le serveur envoie tout de suite une vraie
+// notification à l'appareil qui le demande, par le même chemin que les rappels du matin, et rend le résultat
+// { ok, code, message } que le panneau affiche. { ping: true } répond seulement « serveur installé ».
+// auth : compte Google de l'appel (Firebase Auth) ; data : { id } de l'appareil (clé localStorage rappels_appareil).
+const TEST_MSG = { title: '🔔 Test des rappels', body: 'Envoyé par le serveur : vos rappels arriveront comme ceci, chaque matin.', url: 'plateforme.html#rappel=liste', tag: 'rappel-test' };
+async function test({ db, send, auth, data, ts }) {
+  const no = (code, message) => ({ ok: false, code, message });
+  if (data && data.ping) return { ok: true, ping: true, v: 19 };
+  if (!auth || !auth.token) return no('unauthenticated', 'connectez-vous d\'abord avec ☁');
+  const id = String((data && data.id) || '');
+  if (!/^[A-Za-z0-9_-]{4,80}$/.test(id)) return no('invalid-argument', 'appareil inconnu : appuyez sur « Activer » sur cet appareil');
+  const root = db.collection('app').doc('_rappels');
+  const devRef = root.collection('appareils').doc(id), sentRef = root.collection('envois').doc(id);
+  const snap = await devRef.get();
+  const a = (snap.exists && snap.data()) || {};
+  if (!a.token) return no('not-found', 'cet appareil n\'est pas inscrit côté serveur : appuyez sur « Réactiver »');
+  const mail = String(auth.token.email || '').toLowerCase();
+  if (a.email && mail && String(a.email).toLowerCase() !== mail) return no('permission-denied', 'cet appareil a été inscrit avec un autre compte Google : appuyez sur « Réactiver »');
+  try {
+    await send(a.token, TEST_MSG, '600');   // 10 min : un test qui arrive le lendemain ne servirait à rien
+  } catch (e) {
+    const c = errCode(e);
+    if (isDead(c)) {
+      await devRef.delete(); await sentRef.delete().catch(() => {});
+      return no('token', 'Firebase ne reconnaît plus ce téléphone (jeton expiré) : appuyez sur « Réactiver »');
+    }
+    await sentRef.set({ derniereErreur: errText(e), erreurLe: ts }, { merge: true }).catch(() => {});
+    return no('fcm', 'envoi refusé par Firebase Cloud Messaging : ' + errText(e));
+  }
+  await sentRef.set({ dernierTest: ts, derniereErreur: '' }, { merge: true });
+  return { ok: true };
+}
+
+module.exports = { DEFAULT_PREFS, reassemble, pmFromRecords, collectItems, todayIn, days, dueFor, message, prune, run, TEST_MSG, test };
